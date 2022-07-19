@@ -33,7 +33,12 @@ def clipping(inp,lev):
 
 ################ WEIGHTED SIMILARITY MATCHING BLIND SOURCE SEPARATION #######################
 class OnlineWSMBSS:
-    def __init__(self, s_dim, x_dim, h_dim = None, gamma_start = 0.2, gamma_stop = 0.001, beta = 0.5, zeta = 1e-4, muD = [25,25], W_HX = None, W_YH = None, M_H = None, M_Y = None, D1 = None, D2 = None, WScalings = [0.0033,0.0033], GamScalings = [0.02, 0.02], DScalings = [25,1], LayerMinimumGains = [1e-6,1], LayerMaximumGains = [1e6,1], neural_OUTPUT_COMP_TOL = 1e-5, set_ground_truth = False, S = None, A = None ):
+
+    def __init__(self, s_dim, x_dim, h_dim = None, gamma_start = 0.2, gamma_stop = 0.001, beta = 0.5, zeta = 1e-4, muD = [25,25], 
+                 W_HX = None, W_YH = None, M_H = None, M_Y = None, D1 = None, D2 = None, WScalings = [0.0033,0.0033], 
+                 GamScalings = [0.02, 0.02], DScalings = [25,1], LayerMinimumGains = [1e-6,1], LayerMaximumGains = [1e6,1], 
+                 neural_OUTPUT_COMP_TOL = 1e-5, set_ground_truth = False, S = None, A = None ):
+
         if h_dim is None:
             h_dim = s_dim
         else:
@@ -56,25 +61,25 @@ class OnlineWSMBSS:
                 W_YH[k,:] = WScalings[1] * W_YH[k,:]/np.linalg.norm(W_YH[k,:])
 
         if M_H is not None:
-            assert M_H.shape == (h_dim, h_dim), "The shape of the initial guess W must be (h_dim,h_dim)=(%d,%d)" % (h_dim, h_dim)
+            assert M_H.shape == (h_dim, h_dim), "The shape of the initial guess M must be (h_dim,h_dim)=(%d,%d)" % (h_dim, h_dim)
             M_H = M_H
         else:
             M_H = GamScalings[0] * np.eye(h_dim)   
 
         if M_Y is not None:
-            assert M_Y.shape == (s_dim, s_dim), "The shape of the initial guess W must be (s_dim,s_dim)=(%d,%d)" % (s_dim, s_dim)
+            assert M_Y.shape == (s_dim, s_dim), "The shape of the initial guess M must be (s_dim,s_dim)=(%d,%d)" % (s_dim, s_dim)
             M_Y = M_Y
         else:
             M_Y = GamScalings[1] * np.eye(s_dim)
 
         if D1 is not None:
-            assert D1.shape == (h_dim, h_dim), "The shape of the initial guess W must be (h_dim,h_dim)=(%d,%d)" % (h_dim, h_dim)
+            assert D1.shape == (h_dim, h_dim), "The shape of the initial guess D must be (h_dim,h_dim)=(%d,%d)" % (h_dim, h_dim)
             D1 = D1
         else:
             D1 = DScalings[0] * np.eye(h_dim)
 
         if D2 is not None:
-            assert D2.shape == (s_dim, s_dim), "The shape of the initial guess W must be (s_dim,s_dim)=(%d,%d)" % (s_dim, s_dim)
+            assert D2.shape == (s_dim, s_dim), "The shape of the initial guess D must be (s_dim,s_dim)=(%d,%d)" % (s_dim, s_dim)
             D2 = D2
         else:
             D2 = DScalings[1] * np.eye(s_dim)
@@ -3873,6 +3878,32 @@ def CalculateSINR(Out,S, compute_permutation = True):
     SINR=(SigPow/MSE)
     return SINR,SigPow,MSE,G
     
+def addWGN(signal, SNR, return_noise = False, print_resulting_SNR = False):
+    """
+    Adding white Gaussian Noise to the input signal
+    signal              : Input signal, numpy array of shape (number of sources, number of samples)
+                          If your signal is a 1D numpy array of shape (number of samples, ), then reshape it 
+                          by signal.reshape(1,-1) before giving it as input to this function
+    SNR                 : Desired input signal to noise ratio
+    print_resulting_SNR : If you want to print the numerically calculated SNR, pass it as True
+    
+    Returns
+    ============================
+    signal_noisy        : Output signal which is the sum of input signal and additive noise
+    noise               : Returns the added noise
+    """
+    sigpow = np.mean(signal**2, axis = 1)
+    noisepow = 10 **(-SNR/10) * sigpow
+    noise =  np.sqrt(noisepow)[:,np.newaxis] * np.random.randn(signal.shape[0], signal.shape[1])
+    signal_noisy = signal + noise
+    if print_resulting_SNR:
+        SNRinp = 10 * np.log10(np.sum(np.mean(signal**2, axis = 1)) / np.sum(np.mean(noise**2, axis = 1)))
+        print("Input SNR is : {}".format(SNRinp))
+    if return_noise:
+        return signal_noisy, noise
+    else:
+        return signal_noisy
+
 def generate_correlated_uniform_sources(R, range_ = [-1,1], n_sources = 5, size_sources = 500000):
     """
     R : correlation matrix
