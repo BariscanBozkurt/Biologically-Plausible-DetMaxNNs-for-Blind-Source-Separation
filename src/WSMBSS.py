@@ -331,7 +331,8 @@ class OnlineWSMBSS:
                 u = u + (MUV) * delu
                 y = u / np.diag(Gamma_Y * (D2))
                 y = y*(y>=0)*(y<=1.0)+(y>1.0)*1.0
-
+                v = ((1 - beta) * Gamma_H + beta * D1 @ Gamma_H @ D1) @ (h)
+                u = Gamma_Y @ D2 @ (y)
                 MembraneVoltageNotSettled = 0
                 if (np.linalg.norm(v - PreviousMembraneVoltages['v'])/(np.linalg.norm(v) + 1e-30) > OUTPUT_COMP_TOL) | (np.linalg.norm(u - PreviousMembraneVoltages['u'])/(np.linalg.norm(u) + 1e-30) > OUTPUT_COMP_TOL):
                     MembraneVoltageNotSettled = 1
