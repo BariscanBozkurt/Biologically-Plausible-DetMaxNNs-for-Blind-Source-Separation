@@ -3771,6 +3771,59 @@ def CalculateSINR(Out,S):
     SINR=(SigPow/MSE)
     return SINR,SigPow,MSE,G
     
+def addWGN(signal, SNR, return_noise = False, print_resulting_SNR = False):
+    """
+    Adding white Gaussian Noise to the input signal
+    signal              : Input signal, numpy array of shape (number of sources, number of samples)
+                          If your signal is a 1D numpy array of shape (number of samples, ), then reshape it 
+                          by signal.reshape(1,-1) before giving it as input to this function
+    SNR                 : Desired input signal to noise ratio
+    print_resulting_SNR : If you want to print the numerically calculated SNR, pass it as True
+    
+    Returns
+    ============================
+    signal_noisy        : Output signal which is the sum of input signal and additive noise
+    noise               : Returns the added noise
+    """
+    sigpow = np.mean(signal**2, axis = 1)
+    noisepow = 10 **(-SNR/10) * sigpow
+    noise =  np.sqrt(noisepow)[:,np.newaxis] * np.random.randn(signal.shape[0], signal.shape[1])
+    signal_noisy = signal + noise
+    if print_resulting_SNR:
+        SNRinp = 10 * np.log10(np.sum(np.mean(signal**2, axis = 1)) / np.sum(np.mean(noise**2, axis = 1)))
+        print("Input SNR is : {}".format(SNRinp))
+    if return_noise:
+        return signal_noisy, noise
+    else:
+        return signal_noisy
+
+def WSM_Mixing_Scenario(S, NumberofMixtures = None, INPUT_STD = None):
+    """
+    Linearly mixing source signals
+    Inputs
+    ===================================================
+    S                   : Input signal, numpy array of shape = (NumberofSources, N), where N is the number of samples
+    NumberofMixtures    : Number of Mixtures to be generated
+    INPUT_STD           : Standard deviation of the source signals, for power normalization in the mixing scenario
+
+    Returns 
+    ===================================================
+    A                   : A random mixing matrix of size (NumberofMixtures, NumberofSources), where NumberofSources = S.shape[0]
+    X                   : Resulting mixtures signals, i.e., X = A @ S, numpy array of size (NumberofMixtures, N)
+    """
+    NumberofSources = S.shape[0]
+    if INPUT_STD is None:
+        INPUT_STD = S.std()
+    if NumberofMixtures is None:
+        NumberofMixtures = NumberofSources
+    A = np.random.standard_normal(size=(NumberofMixtures,NumberofSources))
+    X = A @ S
+    for M in range(A.shape[0]):
+        stdx = np.std(X[M,:])
+        A[M,:] = A[M,:]/stdx * INPUT_STD
+        
+    return A, X
+    
 def generate_correlated_uniform_sources(R, range_ = [-1,1], n_sources = 5, size_sources = 500000):
     """
     R : correlation matrix
