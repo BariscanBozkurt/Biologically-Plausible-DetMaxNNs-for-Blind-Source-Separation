@@ -2151,6 +2151,7 @@ class OnlineWSMBSS:
             SNR_list = self.SNR_list
             S = self.S
             A = self.A 
+            Szeromean = S - S.mean(axis = 1).reshape(-1,1)
             plt.figure(figsize = (70, 50), dpi = 80)
 
         for k in range(n_epochs):
@@ -2216,18 +2217,19 @@ class OnlineWSMBSS:
                             _, SGG, _ =np.linalg.svd(GG)
                             self.SV_list.append(abs(SGG))
 
-                            Y_ = W @ X
-                            Y_ = self.signed_and_permutation_corrected_sources(S.T,Y_.T)
-                            coef_ = (Y_ * S.T).sum(axis = 0) / (Y_ * Y_).sum(axis = 0)
+                            Y = W @ X
+                            Yzeromean = Y - Y.mean(axis = 1).reshape(-1,1)
+                            Y_ = self.signed_and_permutation_corrected_sources(Szeromean.T,Yzeromean.T)
+                            coef_ = (Y_ * Szeromean.T).sum(axis = 0) / (Y_ * Y_).sum(axis = 0)
                             Y_ = coef_ * Y_
-                            bias = + (S.T - Y_).mean(axis = 0)
-                            Y_ = Y_ + bias
+                            # bias = + (S.T - Y_).mean(axis = 0)
+                            # Y_ = Y_ + bias
                             self.Y_ = Y_ 
                             
                             # SIR_list.append(SIR)
-                            SIR_list.append(10*np.log10(CalculateSINR(Y_.T, S, False)[0]))
+                            SIR_list.append(10*np.log10(CalculateSINR(Y_.T, Szeromean, False)[0]))
 
-                            SNR_list.append(self.snr(S.T,Y_))
+                            SNR_list.append(self.snr(Szeromean.T,Y_))
                             if plot_in_jupyter:
                                 # d1_min, d1_max, d2_min, d2_max = np.min(np.diag(D1)), np.max(np.diag(D1)), np.min(np.diag(D2)), np.max(np.diag(D2))
                                 d1_min, d2_min = np.diag(D1), np.diag(D2)
@@ -2282,7 +2284,7 @@ class OnlineWSMBSS:
 
                                 pl.subplot(3,2,6)
                                 pl.plot(Y[:,idx[i_sample-25:i_sample]].T, linewidth = 5)
-                                pl.title("Y last 25", fontsize = 45)
+                                pl.title("Y last 25 (mean centered)", fontsize = 45)
                                 pl.grid()
                                 pl.xticks(fontsize=45)
                                 pl.yticks(fontsize=45)
