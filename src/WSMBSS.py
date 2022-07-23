@@ -524,7 +524,7 @@ class OnlineWSMBSS:
 
             y = np.maximum(y - STLAMBD, 0)
             dval = np.sum(y) - 1
-            STLAMBD = STLAMBD + 0.01* dval
+            STLAMBD = STLAMBD + 0.07* dval
 
             MembraneVoltageNotSettled = 0
             if (np.linalg.norm(v - PreviousMembraneVoltages['v'])/np.linalg.norm(v) > OUTPUT_COMP_TOL) | (np.linalg.norm(u - PreviousMembraneVoltages['u'])/np.linalg.norm(u) > OUTPUT_COMP_TOL):
@@ -703,7 +703,7 @@ class OnlineWSMBSS:
     @staticmethod
     @njit
     def run_neural_dynamics_general_polytope_jit(x_current, h, y, signed_dims, nn_dims, sparse_dims_list, M_H, M_Y, W_HX, W_YH, D1, D2, beta, zeta, 
-                                                neural_dynamic_iterations, lr_start, lr_stop = 0.05, OUTPUT_COMP_TOL = 1e-6):
+                                                neural_dynamic_iterations, lr_start, lr_stop = 0.05, lambda_lr = 1, OUTPUT_COMP_TOL = 1e-6):
 
         def ProjectOntoLInfty(X, thresh = 1.0):
             return X*(X>=-thresh)*(X<=thresh)+(X>thresh)*thresh-thresh*(X<-thresh)
@@ -762,7 +762,7 @@ class OnlineWSMBSS:
                         y[np.array(loop_intersection(sparse_dim, signed_dims))] = SoftThresholding(y[np.array(loop_intersection(sparse_dim, signed_dims))], STLAMBD_list[ss])
                     if nn_dims[0] != -1:
                         y[np.array(loop_intersection(sparse_dim, nn_dims))] = ReLU(y[np.array(loop_intersection(sparse_dim, nn_dims))] - STLAMBD_list[ss])
-                    STLAMBD_list[ss] = max(STLAMBD_list[ss] + (np.linalg.norm(y[sparse_dim],1) - 1), 0)
+                    STLAMBD_list[ss] = max(STLAMBD_list[ss] + lambda_lr * (np.linalg.norm(y[sparse_dim],1) - 1), 0)
             if signed_dims[0] != -1:
                 y[signed_dims] = ProjectOntoLInfty(y[signed_dims])
             if nn_dims[0] != -1:
@@ -775,223 +775,10 @@ class OnlineWSMBSS:
             PreviousMembraneVoltages['u'] = u
             
         return h,y, OutputCounter
+
     ###############################################################
     ############## WSMBSS ALGORITHMS ##############################
     ###############################################################
-
-    def fit_batch_general_polytope(self, X, signed_dims, nn_dims, sparse_dims_list, n_epochs = 1, neural_dynamic_iterations = 750, neural_lr_start = 0.2, neural_lr_stop = 0.5, shuffle = True, debug_iteration_point = 1000, plot_in_jupyter = False):
-        gamma_start, beta, zeta, muD, W_HX, W_YH, M_H, M_Y, D1, D2 = self.gamma_start, self.beta, self.zeta, self.muD, self.W_HX, self.W_YH, self.M_H, self.M_Y, self.D1, self.D2
-        LayerMinimumGains = self.LayerMinimumGains
-        LayerMaximumGains = self.LayerMaximumGains
-        debugging = self.set_ground_truth
-        neural_OUTPUT_COMP_TOL = self.neural_OUTPUT_COMP_TOL
-        assert X.shape[0] == self.x_dim, "You must input the transpose, or you need to change one of the following hyperparameters: s_dim, x_dim"
-
-        s_dim = self.s_dim
-        h_dim = self.h_dim
-        samples = X.shape[1]
-        D1minlist = []
-        D2minlist = []
-        self.SV_list = []
-        self.D2minlist = []
-        self.D1minlist = []
-        if self.Y is None:
-            H = np.zeros((h_dim,samples)) 
-            Y = np.zeros((s_dim,samples))
-            # H = np.random.randn(h_dim, samples)
-            # Y = np.random.randn(h_dim, samples)
-        else:
-            H, Y = self.H, self.Y
-
-        if debugging:
-            SIR_list = self.SIR_list
-            SNR_list = self.SNR_list
-            S = self.S
-            A = self.A 
-            plt.figure(figsize = (70, 50), dpi = 80)
-
-        if (signed_dims.size == 0):
-            signed_dims = np.array([-1])
-        if (nn_dims.size == 0):
-            nn_dims = np.array([-1])
-        if (not sparse_dims_list):
-            sparse_dims_list = [np.array([-1])]
-
-        for k in range(n_epochs):
-            if shuffle:
-                idx = np.random.permutation(samples)
-            else:
-                idx = np.arange(samples)
-                
-            for i_sample in tqdm(range(samples)):
-
-                x_current  = X[:,idx[i_sample]] # Take one input
-
-                y = Y[:,idx[i_sample]]
-
-                h = H[:,idx[i_sample]]
-
-                h,y,_ = self.run_neural_dynamics_general_polytope_jit(x_current = x_current, h = h, y = y, 
-                                                                      signed_dims = signed_dims, nn_dims = nn_dims, 
-                                                                      sparse_dims_list = sparse_dims_list, M_H = M_H, M_Y = M_Y, 
-                                                                      W_HX = W_HX, W_YH = W_YH, D1 = D1, D2 = D2, beta = beta, zeta = zeta, 
-                                                                      neural_dynamic_iterations = neural_dynamic_iterations, lr_start = neural_lr_start, 
-                                                                      lr_stop = neural_lr_stop, OUTPUT_COMP_TOL = neural_OUTPUT_COMP_TOL)
-
-                MUS = np.max([gamma_start/(1 + np.log(2 + i_sample)), 0.001])
-
-                M_H = (1 - MUS) * M_H + MUS * np.outer(h,h)
-                M_Y = (1 - MUS) * M_Y + MUS * np.outer(y,y)
-                
-                W_HX = (1 - MUS) * W_HX + MUS * np.outer(h,x_current)
-                W_YH = (1 - MUS) * W_YH + MUS * np.outer(y,h)
-                
-                D1derivative = (1 - zeta) * beta * np.diag(np.diag(M_H @ D1 @ M_H - W_HX @ W_HX.T)) + zeta * self.dlogdet(D1)
-                # D1 = D1 - muD[0] * D1derivative
-                D1 = D1 - clipping(muD[0] * D1derivative, D1 * 1)
-
-                D2derivative = (1 - zeta) * (1 - beta) * np.diag(np.diag(M_Y @ D2 @ M_Y - W_YH @ W_YH.T)) + zeta * self.dlogdet(D2)
-                # D2 = D2 - muD[1] * D2derivative
-                D2 = D2 - clipping(muD[1] * D2derivative, D2 * 1)
-
-                d1 = np.diag(D1)
-                d2 = np.diag(D2)
-                D1 = np.diag(d1 * (d1 > LayerMinimumGains[0]) * (d1 < LayerMaximumGains[0]) + LayerMaximumGains[0] * (d1 >= LayerMaximumGains[0]) + LayerMinimumGains[0] * (d1 <= LayerMinimumGains[0]))
-                D2 = np.diag(d2 * (d2 > LayerMinimumGains[1]) * (d2 < LayerMaximumGains[1]) + LayerMaximumGains[1] * (d2 >= LayerMaximumGains[1]) + LayerMinimumGains[1] * (d2 <= LayerMinimumGains[1]))
-                
-                Y[:,idx[i_sample]] = y
-                H[:,idx[i_sample]] = h               
-
-                if debugging:
-                    if (i_sample % debug_iteration_point) == 0:
-                        try:
-                            W = self.compute_overall_mapping(return_mapping = True)
-
-                            self.W = W
-
-                            T = W @ A
-                            Tabs = np.abs(T)
-                            P = np.zeros((s_dim, s_dim))
-
-                            for SourceIndex in range(s_dim):
-                                Tmax = np.max(Tabs[SourceIndex,:])
-                                Tabs[SourceIndex,:] = Tabs[SourceIndex,:]/Tmax
-                                P[SourceIndex,:] = Tabs[SourceIndex,:]>0.999
-                            
-                            GG = P.T @ T
-                            _, SGG, _ =np.linalg.svd(GG)
-                            self.SV_list.append(abs(SGG))
-
-                            diagGG = np.diag(GG)
-                            # Signal Power
-                            sigpow = np.linalg.norm(diagGG,2)**2
-                            # Interference Power
-                            intpow = np.linalg.norm(GG, 'fro')**2 - sigpow
-
-                            SIR = 10*np.log10(sigpow/intpow)
-
-                            Y_ = W @ X
-                            Y_ = self.signed_and_permutation_corrected_sources(S.T,Y_.T)
-                            coef_ = (Y_ * S.T).sum(axis = 0) / (Y_ * Y_).sum(axis = 0)
-                            Y_ = coef_ * Y_
-                            bias = + (S.T - Y_).mean(axis = 0)
-                            Y_ = Y_ + bias
-                            self.Y_ = Y_ 
-                            
-                            # SIR_list.append(SIR)
-                            SIR_list.append(10*np.log10(CalculateSINR(Y_.T, S, False)[0]))
-
-                            SNR_list.append(self.snr(S.T,Y_))
-                            if plot_in_jupyter:
-                                # d1_min, d1_max, d2_min, d2_max = np.min(np.diag(D1)), np.max(np.diag(D1)), np.min(np.diag(D2)), np.max(np.diag(D2))
-                                d1_min, d2_min = np.diag(D1), np.diag(D2)
-                                D1minlist.append(d1_min)
-                                D2minlist.append(d2_min)
-                                # D1maxlist.append(d1_max)
-                                # D2maxlist.append(d2_max)
-
-                                pl.clf()
-                                pl.subplot(3,2,1)
-                                pl.plot(np.array(SIR_list), linewidth = 5)
-                                pl.xlabel("Number of Iterations / {}".format(debug_iteration_point), fontsize = 45)
-                                pl.ylabel("SIR (dB)", fontsize = 45)
-                                pl.title("SIR Behaviour", fontsize = 45)
-                                pl.grid()
-                                # pl.title("Neural Dynamic Iteration Number : {}".format(str(oc)), fontsize = 45)
-                                pl.xticks(fontsize=45)
-                                pl.yticks(fontsize=45)
-
-                                pl.subplot(3,2,3)
-                                pl.plot(np.array(D1minlist), linewidth = 5)
-                                pl.grid()
-                                pl.title("Diagonal Values of D1", fontsize = 45)
-                                pl.xlabel("Number of Iterations / {}".format(debug_iteration_point), fontsize = 45)
-                                pl.xticks(fontsize=45)
-                                pl.yticks(fontsize=45)
-
-                                pl.subplot(3,2,4)
-                                pl.plot(np.array(D2minlist), linewidth = 5)
-                                pl.grid()
-                                pl.title("Diagonal Values of D2", fontsize = 45)
-                                pl.xlabel("Number of Iterations / {}".format(debug_iteration_point), fontsize = 45)
-                                pl.xticks(fontsize=45)
-                                pl.yticks(fontsize=45)
-
-                                pl.subplot(3,2,2)
-                                pl.plot(np.array(SNR_list), linewidth = 5)
-                                pl.grid()
-                                pl.title("Component SNR Check", fontsize = 45)
-                                pl.ylabel("SNR (dB)", fontsize = 45)
-                                pl.xlabel("Number of Iterations / {}".format(debug_iteration_point), fontsize = 45)
-                                pl.xticks(fontsize=45)
-                                pl.yticks(fontsize=45)
-
-                                pl.subplot(3,2,5)
-                                pl.plot(np.array(self.SV_list), linewidth = 5)
-                                pl.grid()
-                                pl.title("Singular Value Check, Overall Matrix Rank: "+str(np.linalg.matrix_rank(P)) , fontsize = 45)
-                                pl.xlabel("Number of Iterations / {}".format(debug_iteration_point), fontsize = 45)
-                                pl.xticks(fontsize=45)
-                                pl.yticks(fontsize=45)
-
-                                pl.subplot(3,2,6)
-                                pl.plot(Y[:,idx[i_sample-25:i_sample]].T, linewidth = 5)
-                                pl.title("Y last 25", fontsize = 45)
-                                pl.grid()
-                                pl.xticks(fontsize=45)
-                                pl.yticks(fontsize=45)
-
-                                clear_output(wait=True)
-                                display(pl.gcf())   
-
-                            self.W_HX = W_HX
-                            self.W_YH = W_YH
-                            self.M_H = M_H
-                            self.M_Y = M_Y
-                            self.D1 = D1
-                            self.D2 = D2
-
-                            self.H = H
-                            self.Y = Y
-                            self.SIR_list = SIR_list
-                            self.SNR_list = SNR_list 
-                            self.D1minlist = D1minlist
-                            self.D2minlist = D2minlist
-                        except Exception as e:
-                            print(str(e))
-                            
-
-        self.W_HX = W_HX
-        self.W_YH = W_YH
-        self.M_H = M_H
-        self.M_Y = M_Y
-        self.D1 = D1
-        self.D2 = D2
-
-        self.H = H
-        self.Y = Y
-        self.SIR_list = SIR_list
-        self.SNR_list = SNR_list     
 
     def compute_overall_mapping(self, return_mapping = False):
         beta, zeta, D1, D2, M_H, M_Y, W_HX, W_YH = self.beta, self.zeta, self.D1, self.D2, self.M_H, self.M_Y, self.W_HX, self.W_YH
@@ -1961,6 +1748,7 @@ class OnlineWSMBSS:
             SNR_list = self.SNR_list
             S = self.S
             A = self.A 
+            Szeromean = S - S.mean(axis = 1).reshape(-1,1)
             plt.figure(figsize = (70, 50), dpi = 80)
 
         for k in range(n_epochs):
@@ -2025,14 +1813,16 @@ class OnlineWSMBSS:
                             self.SV_list.append(abs(SGG))
 
                             Y_ = W @ X
-                            Y_ = self.signed_and_permutation_corrected_sources(S.T,Y_.T)
-                            coef_ = (Y_ * S.T).sum(axis = 0) / (Y_ * Y_).sum(axis = 0)
+                            Yzeromean = Y_ - Y_.mean(axis = 1).reshape(-1,1)
+                            Y_ = self.signed_and_permutation_corrected_sources(Szeromean.T,Yzeromean.T)
+                            coef_ = (Y_ * Szeromean.T).sum(axis = 0) / (Y_ * Y_).sum(axis = 0)
                             Y_ = coef_ * Y_
-                            self.Y_ = Y_
+                            self.Y_ = Y_ 
                             
-                            SIR_list.append(10*np.log10(CalculateSINR(Y_.T, S)[0]))
+                            # SIR_list.append(SIR)
+                            SIR_list.append(10*np.log10(CalculateSINR(Y_.T, Szeromean, False)[0]))
 
-                            SNR_list.append(self.snr(S.T,Y_))
+                            SNR_list.append(self.snr(Szeromean.T,Y_))
                             if plot_in_jupyter:
                                 # d1_min, d1_max, d2_min, d2_max = np.min(np.diag(D1)), np.max(np.diag(D1)), np.min(np.diag(D2)), np.max(np.diag(D2))
                                 d1_min, d2_min = np.diag(D1), np.diag(D2)
@@ -2217,13 +2007,11 @@ class OnlineWSMBSS:
                             _, SGG, _ =np.linalg.svd(GG)
                             self.SV_list.append(abs(SGG))
 
-                            Y = W @ X
-                            Yzeromean = Y - Y.mean(axis = 1).reshape(-1,1)
+                            Y_ = W @ X
+                            Yzeromean = Y_ - Y_.mean(axis = 1).reshape(-1,1)
                             Y_ = self.signed_and_permutation_corrected_sources(Szeromean.T,Yzeromean.T)
                             coef_ = (Y_ * Szeromean.T).sum(axis = 0) / (Y_ * Y_).sum(axis = 0)
                             Y_ = coef_ * Y_
-                            # bias = + (S.T - Y_).mean(axis = 0)
-                            # Y_ = Y_ + bias
                             self.Y_ = Y_ 
                             
                             # SIR_list.append(SIR)
@@ -2284,7 +2072,7 @@ class OnlineWSMBSS:
 
                                 pl.subplot(3,2,6)
                                 pl.plot(Y[:,idx[i_sample-25:i_sample]].T, linewidth = 5)
-                                pl.title("Y last 25 (mean centered)", fontsize = 45)
+                                pl.title("Y last 25", fontsize = 45)
                                 pl.grid()
                                 pl.xticks(fontsize=45)
                                 pl.yticks(fontsize=45)
@@ -2832,6 +2620,220 @@ class OnlineWSMBSS:
 
         self.H = H
         self.Y = Y
+
+    def fit_batch_general_polytope(self, X, signed_dims, nn_dims, sparse_dims_list, n_epochs = 1, neural_dynamic_iterations = 750, neural_lr_start = 0.2, neural_lr_stop = 0.5, lambda_lr = 1, shuffle = True, debug_iteration_point = 1000, plot_in_jupyter = False):
+        gamma_start, beta, zeta, muD, W_HX, W_YH, M_H, M_Y, D1, D2 = self.gamma_start, self.beta, self.zeta, self.muD, self.W_HX, self.W_YH, self.M_H, self.M_Y, self.D1, self.D2
+        LayerMinimumGains = self.LayerMinimumGains
+        LayerMaximumGains = self.LayerMaximumGains
+        debugging = self.set_ground_truth
+        neural_OUTPUT_COMP_TOL = self.neural_OUTPUT_COMP_TOL
+        assert X.shape[0] == self.x_dim, "You must input the transpose, or you need to change one of the following hyperparameters: s_dim, x_dim"
+
+        s_dim = self.s_dim
+        h_dim = self.h_dim
+        samples = X.shape[1]
+        D1minlist = []
+        D2minlist = []
+        self.SV_list = []
+        self.D2minlist = []
+        self.D1minlist = []
+        if self.Y is None:
+            H = np.zeros((h_dim,samples)) 
+            Y = np.zeros((s_dim,samples))
+            # H = np.random.randn(h_dim, samples)
+            # Y = np.random.randn(h_dim, samples)
+        else:
+            H, Y = self.H, self.Y
+
+        if debugging:
+            SIR_list = self.SIR_list
+            SNR_list = self.SNR_list
+            S = self.S
+            A = self.A 
+            plt.figure(figsize = (70, 50), dpi = 80)
+
+        if (signed_dims.size == 0):
+            signed_dims = np.array([-1])
+        if (nn_dims.size == 0):
+            nn_dims = np.array([-1])
+        if (not sparse_dims_list):
+            sparse_dims_list = [np.array([-1])]
+
+        for k in range(n_epochs):
+            if shuffle:
+                idx = np.random.permutation(samples)
+            else:
+                idx = np.arange(samples)
+                
+            for i_sample in tqdm(range(samples)):
+
+                x_current  = X[:,idx[i_sample]] # Take one input
+
+                y = Y[:,idx[i_sample]]
+
+                h = H[:,idx[i_sample]]
+
+                h,y,_ = self.run_neural_dynamics_general_polytope_jit(x_current = x_current, h = h, y = y, 
+                                                                      signed_dims = signed_dims, nn_dims = nn_dims, 
+                                                                      sparse_dims_list = sparse_dims_list, M_H = M_H, M_Y = M_Y, 
+                                                                      W_HX = W_HX, W_YH = W_YH, D1 = D1, D2 = D2, beta = beta, zeta = zeta, 
+                                                                      neural_dynamic_iterations = neural_dynamic_iterations, lr_start = neural_lr_start, 
+                                                                      lr_stop = neural_lr_stop, lambda_lr = lambda_lr, OUTPUT_COMP_TOL = neural_OUTPUT_COMP_TOL)
+
+                MUS = np.max([gamma_start/(1 + np.log(2 + i_sample)), 0.001])
+
+                M_H = (1 - MUS) * M_H + MUS * np.outer(h,h)
+                M_Y = (1 - MUS) * M_Y + MUS * np.outer(y,y)
+                
+                W_HX = (1 - MUS) * W_HX + MUS * np.outer(h,x_current)
+                W_YH = (1 - MUS) * W_YH + MUS * np.outer(y,h)
+                
+                D1derivative = (1 - zeta) * beta * np.diag(np.diag(M_H @ D1 @ M_H - W_HX @ W_HX.T)) + zeta * self.dlogdet(D1)
+                # D1 = D1 - muD[0] * D1derivative
+                D1 = D1 - clipping(muD[0] * D1derivative, D1 * 1)
+
+                D2derivative = (1 - zeta) * (1 - beta) * np.diag(np.diag(M_Y @ D2 @ M_Y - W_YH @ W_YH.T)) + zeta * self.dlogdet(D2)
+                # D2 = D2 - muD[1] * D2derivative
+                D2 = D2 - clipping(muD[1] * D2derivative, D2 * 1)
+
+                d1 = np.diag(D1)
+                d2 = np.diag(D2)
+                D1 = np.diag(d1 * (d1 > LayerMinimumGains[0]) * (d1 < LayerMaximumGains[0]) + LayerMaximumGains[0] * (d1 >= LayerMaximumGains[0]) + LayerMinimumGains[0] * (d1 <= LayerMinimumGains[0]))
+                D2 = np.diag(d2 * (d2 > LayerMinimumGains[1]) * (d2 < LayerMaximumGains[1]) + LayerMaximumGains[1] * (d2 >= LayerMaximumGains[1]) + LayerMinimumGains[1] * (d2 <= LayerMinimumGains[1]))
+                
+                Y[:,idx[i_sample]] = y
+                H[:,idx[i_sample]] = h               
+
+                if debugging:
+                    if (i_sample % debug_iteration_point) == 0:
+                        try:
+                            W = self.compute_overall_mapping(return_mapping = True)
+
+                            self.W = W
+
+                            T = W @ A
+                            Tabs = np.abs(T)
+                            P = np.zeros((s_dim, s_dim))
+
+                            for SourceIndex in range(s_dim):
+                                Tmax = np.max(Tabs[SourceIndex,:])
+                                Tabs[SourceIndex,:] = Tabs[SourceIndex,:]/Tmax
+                                P[SourceIndex,:] = Tabs[SourceIndex,:]>0.999
+                            
+                            GG = P.T @ T
+                            _, SGG, _ =np.linalg.svd(GG)
+                            self.SV_list.append(abs(SGG))
+
+                            diagGG = np.diag(GG)
+                            # Signal Power
+                            sigpow = np.linalg.norm(diagGG,2)**2
+                            # Interference Power
+                            intpow = np.linalg.norm(GG, 'fro')**2 - sigpow
+
+                            SIR = 10*np.log10(sigpow/intpow)
+
+                            Y_ = W @ X
+                            Y_ = self.signed_and_permutation_corrected_sources(S.T,Y_.T)
+                            coef_ = (Y_ * S.T).sum(axis = 0) / (Y_ * Y_).sum(axis = 0)
+                            Y_ = coef_ * Y_
+                            bias = + (S.T - Y_).mean(axis = 0)
+                            Y_ = Y_ + bias
+                            self.Y_ = Y_ 
+                            
+                            # SIR_list.append(SIR)
+                            SIR_list.append(10*np.log10(CalculateSINR(Y_.T, S, False)[0]))
+
+                            SNR_list.append(self.snr(S.T,Y_))
+                            if plot_in_jupyter:
+                                # d1_min, d1_max, d2_min, d2_max = np.min(np.diag(D1)), np.max(np.diag(D1)), np.min(np.diag(D2)), np.max(np.diag(D2))
+                                d1_min, d2_min = np.diag(D1), np.diag(D2)
+                                D1minlist.append(d1_min)
+                                D2minlist.append(d2_min)
+                                # D1maxlist.append(d1_max)
+                                # D2maxlist.append(d2_max)
+
+                                pl.clf()
+                                pl.subplot(3,2,1)
+                                pl.plot(np.array(SIR_list), linewidth = 5)
+                                pl.xlabel("Number of Iterations / {}".format(debug_iteration_point), fontsize = 45)
+                                pl.ylabel("SIR (dB)", fontsize = 45)
+                                pl.title("SIR Behaviour", fontsize = 45)
+                                pl.grid()
+                                # pl.title("Neural Dynamic Iteration Number : {}".format(str(oc)), fontsize = 45)
+                                pl.xticks(fontsize=45)
+                                pl.yticks(fontsize=45)
+
+                                pl.subplot(3,2,3)
+                                pl.plot(np.array(D1minlist), linewidth = 5)
+                                pl.grid()
+                                pl.title("Diagonal Values of D1", fontsize = 45)
+                                pl.xlabel("Number of Iterations / {}".format(debug_iteration_point), fontsize = 45)
+                                pl.xticks(fontsize=45)
+                                pl.yticks(fontsize=45)
+
+                                pl.subplot(3,2,4)
+                                pl.plot(np.array(D2minlist), linewidth = 5)
+                                pl.grid()
+                                pl.title("Diagonal Values of D2", fontsize = 45)
+                                pl.xlabel("Number of Iterations / {}".format(debug_iteration_point), fontsize = 45)
+                                pl.xticks(fontsize=45)
+                                pl.yticks(fontsize=45)
+
+                                pl.subplot(3,2,2)
+                                pl.plot(np.array(SNR_list), linewidth = 5)
+                                pl.grid()
+                                pl.title("Component SNR Check", fontsize = 45)
+                                pl.ylabel("SNR (dB)", fontsize = 45)
+                                pl.xlabel("Number of Iterations / {}".format(debug_iteration_point), fontsize = 45)
+                                pl.xticks(fontsize=45)
+                                pl.yticks(fontsize=45)
+
+                                pl.subplot(3,2,5)
+                                pl.plot(np.array(self.SV_list), linewidth = 5)
+                                pl.grid()
+                                pl.title("Singular Value Check, Overall Matrix Rank: "+str(np.linalg.matrix_rank(P)) , fontsize = 45)
+                                pl.xlabel("Number of Iterations / {}".format(debug_iteration_point), fontsize = 45)
+                                pl.xticks(fontsize=45)
+                                pl.yticks(fontsize=45)
+
+                                pl.subplot(3,2,6)
+                                pl.plot(Y[:,idx[i_sample-25:i_sample]].T, linewidth = 5)
+                                pl.title("Y last 25", fontsize = 45)
+                                pl.grid()
+                                pl.xticks(fontsize=45)
+                                pl.yticks(fontsize=45)
+
+                                clear_output(wait=True)
+                                display(pl.gcf())   
+
+                            self.W_HX = W_HX
+                            self.W_YH = W_YH
+                            self.M_H = M_H
+                            self.M_Y = M_Y
+                            self.D1 = D1
+                            self.D2 = D2
+
+                            self.H = H
+                            self.Y = Y
+                            self.SIR_list = SIR_list
+                            self.SNR_list = SNR_list 
+                            self.D1minlist = D1minlist
+                            self.D2minlist = D2minlist
+                        except Exception as e:
+                            print(str(e))
+                            
+
+        self.W_HX = W_HX
+        self.W_YH = W_YH
+        self.M_H = M_H
+        self.M_Y = M_Y
+        self.D1 = D1
+        self.D2 = D2
+
+        self.H = H
+        self.Y = Y
+        self.SIR_list = SIR_list
+        self.SNR_list = SNR_list     
 
 class OnlineNSM:
     """
