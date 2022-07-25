@@ -524,7 +524,7 @@ class OnlineWSMBSS:
 
             y = np.maximum(y - STLAMBD, 0)
             dval = np.sum(y) - 1
-            STLAMBD = STLAMBD + 0.07* dval
+            STLAMBD = STLAMBD + 0.01 * dval
 
             MembraneVoltageNotSettled = 0
             if (np.linalg.norm(v - PreviousMembraneVoltages['v'])/np.linalg.norm(v) > OUTPUT_COMP_TOL) | (np.linalg.norm(u - PreviousMembraneVoltages['u'])/np.linalg.norm(u) > OUTPUT_COMP_TOL):
