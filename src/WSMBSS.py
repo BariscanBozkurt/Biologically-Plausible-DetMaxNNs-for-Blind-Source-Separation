@@ -1972,12 +1972,12 @@ class OnlineWSMBSS:
                 W_YH = (1 - MUS) * W_YH + MUS * np.outer(y,h)
                 
                 D1derivative = (1 - zeta) * beta * np.diag(np.diag(M_H @ D1 @ M_H - W_HX @ W_HX.T)) + zeta * self.dlogdet(D1)
-                # D1 = D1 - muD[0] * D1derivative
-                D1 = D1 - clipping(muD[0] * D1derivative, D1 * 1)
+                D1 = D1 - muD[0] * D1derivative
+                # D1 = D1 - clipping(muD[0] * D1derivative, D1 * 1)
 
                 D2derivative = (1 - zeta) * (1 - beta) * np.diag(np.diag(M_Y @ D2 @ M_Y - W_YH @ W_YH.T)) + zeta * self.dlogdet(D2)
-                # D2 = D2 - muD[1] * D2derivative
-                D2 = D2 - clipping(muD[1] * D2derivative, D2 * 1)
+                D2 = D2 - muD[1] * D2derivative
+                # D2 = D2 - clipping(muD[1] * D2derivative, D2 * 1)
 
                 d1 = np.diag(D1)
                 d2 = np.diag(D2)
