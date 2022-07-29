@@ -3,6 +3,6 @@
 *.pkl
 sounds
 SoundData
-Antisparse_Music_Separation
+Antisparse_Music_Separation.ipynb
 WSMBSSveryOld.py
-
+SoundSeparation
