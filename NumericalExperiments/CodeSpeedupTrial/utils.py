@@ -19,11 +19,52 @@ from scipy.spatial import Delaunay
 from scipy.spatial import ConvexHull  
 from numpy.linalg import det
 from scipy.stats import dirichlet
+from scipy import signal
 import itertools
 import pypoman
 
 ############################ UTILITY FUNCTIONS ######################################
 
+# class Timer:
+#     # It requires import time whereas in this script we have "from time import time"
+#     # A simple timer class for performance profiling
+#     # Taken from https://github.com/flatironinstitute/online_psp/blob/master/online_psp/online_psp_simulations.py
+#     """
+#     Usage:
+#     with Timer() as t:
+#         DO SOMETHING HERE 
+#     print('Above (DO SOMETHING HERE) took %f sec.' % (t.interval))
+#     """
+#     def __enter__(self):
+#         self.start = time.perf_counter()
+#         return self
+
+#     def __exit__(self, *args):
+#         self.end = time.perf_counter()
+#         self.interval = self.end - self.start
+
+def fobi(X, return_unmixing_matrix = False):
+    """
+    Blind source separation via the FOBI (fourth order blind identification).
+    Algorithm is based on the descriptions in the paper 
+    "A Normative and Biologically Plausible Algorithm for Independent Component Analysis (Neurips2021)"
+    See page 3 and 4.
+    """
+    n_samples = X.shape[1]
+    muX = np.mean(X, 1).reshape(-1,1)
+    display_matrix((1/X.shape[1]) * (X - muX) @ (X - muX).T)
+    Cx = (1/n_samples) * (X - muX) @ (X - muX).T
+    Cx_square_root = np.linalg.cholesky(Cx)
+    H = np.linalg.pinv(Cx_square_root) @ X
+    norm_h = (np.sum(np.abs(H)**2,axis=0)**(1./2))
+    Z = norm_h * H
+    _, _, W = np.linalg.svd((1/n_samples)*Z @ Z.T)
+    Y = W @ H
+    if return_unmixing_matrix:
+        return Y, W@np.linalg.pinv(Cx_square_root)
+    else:
+        return Y
+        
 def whiten_signal(X, mean_normalize = True, type_ = 3):
     """
     Input : X  ---> Input signal to be whitened
@@ -193,6 +234,16 @@ def display_matrix(array):
 
 # Calculate SIR Function
 def CalculateSIR(H,pH, return_db = True):
+    """_summary_
+
+    Args:
+        H (_type_): _description_
+        pH (_type_): _description_
+        return_db (bool, optional): _description_. Defaults to True.
+
+    Returns:
+        _type_: _description_
+    """
     G=pH@H
     Gmax=np.diag(np.max(abs(G),axis=1))
     P=1.0*((np.linalg.inv((Gmax))@np.abs(G))>0.99)
@@ -211,7 +262,16 @@ def CalculateSIR(H,pH, return_db = True):
     return SIRV,rankP
 
 def CalculateSINR(Out,S, compute_permutation = True):
-    
+    """_summary_
+
+    Args:
+        Out (_type_): _description_
+        S (_type_): _description_
+        compute_permutation (bool, optional): _description_. Defaults to True.
+
+    Returns:
+        _type_: _description_
+    """
     Smean = np.mean(S,1)
     Outmean = np.mean(Out,1)
     r=S.shape[0]
@@ -235,7 +295,22 @@ def CalculateSINR(Out,S, compute_permutation = True):
 
 @njit
 def CalculateSINRjit(Out,S, compute_permutation = True):
+    """_summary_
+
+    Args:
+        Out (_type_): _description_
+        S (_type_): _description_
+        compute_permutation (bool, optional): _description_. Defaults to True.
+    """
     def mean_numba(a):
+        """_summary_
+
+        Args:
+            a (_type_): _description_
+
+        Returns:
+            _type_: _description_
+        """
         res = []
         for i in range(a.shape[0]):
             res.append(a[i, :].mean())
@@ -266,8 +341,15 @@ def CalculateSINRjit(Out,S, compute_permutation = True):
     return SINR,SigPow,MSE,G
     
 def psnr(img1, img2, pixel_max = 1):
-    """
-    Return peak-signal-to-noise-ratio between given two images
+    """    Return peak-signal-to-noise-ratio between given two images (or two signals)
+
+    Args:
+        img1 (_type_): _description_
+        img2 (_type_): _description_
+        pixel_max (int, optional): _description_. Defaults to 1.
+
+    Returns:
+        _type_: _description_
     """
     mse = np.mean( (img1 - img2) ** 2 )
     if mse == 0:
@@ -276,6 +358,15 @@ def psnr(img1, img2, pixel_max = 1):
         return 20 * np.log10(pixel_max / np.sqrt(mse))
 
 def snr(S_original, S_noisy):
+    """_summary_
+
+    Args:
+        S_original (_type_): _description_
+        S_noisy (_type_): _description_
+
+    Returns:
+        _type_: _description_
+    """
     N_hat = S_original - S_noisy
     N_P = (N_hat ** 2).sum(axis = 0)
     S_P = (S_original ** 2).sum(axis = 0)
@@ -329,6 +420,50 @@ def WSM_Mixing_Scenario(S, NumberofMixtures = None, INPUT_STD = None):
         A[M,:] = A[M,:]/stdx * INPUT_STD
     X = A @ S
     return A, X
+
+def generate_synthetic_data_SMICA(seed=101, samples=10000):
+    """This function is taken from the original published code of the 
+       paper 'A Normative and Biologically Plausible Algorithm for Independent Component Analysis' """
+    mix_dim=4
+    np.random.seed(seed)
+    t = np.linspace(0, samples * 1e-4, samples)
+    two_pi = 2 * np.pi
+    s0 = np.sign(np.cos(two_pi * 155 * t))
+    s1 = np.sin(two_pi * 180 * t)
+    s2= signal.sawtooth(2 * np.pi*200  * t)
+    s3 = np.random.laplace(0, 1, (samples,))
+    S = np.stack([s0, s1, s2,s3])
+    A = np.random.uniform(-.5, .5, (mix_dim, mix_dim))
+    X = np.dot(A, S)
+    return S, X, A
+
+def synthetic_data(s_dim, x_dim, samples):
+    """
+    Parameters:
+    ====================
+    s_dim   -- The dimension of sources
+    x_dim   -- The dimension of mixtures
+    samples -- The number of samples
+    Output:
+    ====================
+    S       -- The source data matrix
+    X       -- The mixture data matrix
+    A       -- Mixing Matrix
+    """
+
+    # Generate sparse random samples
+
+    U = np.random.uniform(0,np.sqrt(48/5),(s_dim,samples)) # independent non-negative uniform source RVs with variance 1
+    B = np.random.binomial(1, .5, (s_dim,samples)) # binomial RVs to sparsify the source
+    S = U*B # sources
+    
+    A = np.random.randn(x_dim,s_dim) # random mixing matrix
+
+    # Generate mixtures
+    
+    X = A @ S
+
+    return S, X, A
 
 def generate_correlated_uniform_sources(R, range_ = [-1,1], n_sources = 5, size_sources = 500000):
     """
