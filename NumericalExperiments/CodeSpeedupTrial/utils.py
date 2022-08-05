@@ -196,12 +196,13 @@ def find_permutation_between_source_and_estimation(S,Y):
     
     # perm = np.argmax(np.abs(np.corrcoef(S.T,Y.T) - np.eye(2*S.shape[1])),axis = 0)[S.shape[1]:]
     # perm = np.argmax(np.abs(np.corrcoef(Y.T,S.T) - np.eye(2*S.shape[1])),axis = 0)[S.shape[1]:]
-    perm = np.argmax(np.abs(outer_prod_broadcasting(Y,S).sum(axis = 0))/(np.linalg.norm(S,axis = 0)*np.linalg.norm(Y,axis=0)), axis = 0)
+    # perm = np.argmax(np.abs(outer_prod_broadcasting(Y,S).sum(axis = 0))/(np.linalg.norm(S,axis = 0)*np.linalg.norm(Y,axis=0)), axis = 0)
+    perm = np.argmax(np.abs(outer_prod_broadcasting(Y.T,S.T).sum(axis = 0))/(np.linalg.norm(S,axis = 1)*np.linalg.norm(Y,axis=1)), axis = 0)
     return perm
 
 def signed_and_permutation_corrected_sources(S,Y):
     perm = find_permutation_between_source_and_estimation(S,Y)
-    return np.sign((Y[:,perm] * S).sum(axis = 0)) * Y[:,perm]
+    return np.sign((Y[perm,:] * S).sum(axis = 0)) * Y[perm,:]
 
 def ProjectRowstoL1NormBall(H):
     Hshape=H.shape
@@ -368,16 +369,16 @@ def snr(S_original, S_noisy):
         _type_: _description_
     """
     N_hat = S_original - S_noisy
-    N_P = (N_hat ** 2).sum(axis = 0)
-    S_P = (S_original ** 2).sum(axis = 0)
+    N_P = (N_hat ** 2).sum(axis = 1)
+    S_P = (S_original ** 2).sum(axis = 1)
     snr = 10 * np.log10(S_P / N_P)
     return snr
 
 @njit( parallel=True )
 def snr_jit(S_original, S_noisy):
     N_hat = S_original - S_noisy
-    N_P = (N_hat ** 2).sum(axis = 0)
-    S_P = (S_original ** 2).sum(axis = 0)
+    N_P = (N_hat ** 2).sum(axis = 1)
+    S_P = (S_original ** 2).sum(axis = 1)
     snr = 10 * np.log10(S_P / N_P)
     return snr
     
