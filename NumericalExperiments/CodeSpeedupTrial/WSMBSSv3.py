@@ -220,7 +220,7 @@ class OnlineWSMBSS:
             _type_: _description_
         """
         perm = self.find_permutation_between_source_and_estimation(S,Y)
-        return np.sign((Y[perm,:] * S).sum(axis = 0)) * Y[perm,:]
+        return (np.sign((Y[perm,:] * S).sum(axis = 1))[:,np.newaxis]) * Y[perm,:]
 
     def evaluate_for_debug(self, W, A, S, X, mean_normalize_estimation = False):
         
@@ -232,7 +232,7 @@ class OnlineWSMBSS:
         coef_ = ((Y_ * S).sum(axis = 1) / (Y_ * Y_).sum(axis = 1)).reshape(-1,1)
         Y_ = coef_ * Y_
 
-        SINR = 10*np.log10(self.CalculateSINRjit(Y_, S)[0])
+        SINR = 10*np.log10(self.CalculateSINRjit(Y_, S, False)[0])
         SNR = self.snr_jit(S, Y_)
 
         T = W @ A
@@ -977,89 +977,19 @@ class OnlineWSMBSS:
                         try:
                             W = self.compute_overall_mapping_jit(beta, zeta, D1, D2, M_H, M_Y, W_HX, W_YH)
                             self.W = W
-
-                            T = W @ A
-                            Tabs = np.abs(T)
-                            P = np.zeros((s_dim, s_dim))
-
-                            for SourceIndex in range(s_dim):
-                                Tmax = np.max(Tabs[SourceIndex,:])
-                                Tabs[SourceIndex,:] = Tabs[SourceIndex,:]/Tmax
-                                P[SourceIndex,:] = Tabs[SourceIndex,:]>0.999
                             
-                            GG = P.T @ T
-                            _, SGG, _ = np.linalg.svd(GG)
+                            SINR_current, SNR_current, SGG, Y_, P = self.evaluate_for_debug(W, A, S, X)
+
                             self.SV_list.append(abs(SGG))
 
-                            Y_ = W @ X
-                            Y_ = self.signed_and_permutation_corrected_sources(S.T,Y_.T)
-                            coef_ = (Y_ * S.T).sum(axis = 0) / (Y_ * Y_).sum(axis = 0)
-                            Y_ = coef_ * Y_
-                            self.Y_ = Y_
+                            SNR_list.append(SNR_current)
+                            SIR_list.append(SINR_current)
 
-                            SNR_list.append(self.snr_jit(S.T,Y_))
-                            SIR_list.append(10*np.log10(self.CalculateSINRjit(Y_.T, S)[0]))
                             if plot_in_jupyter:
                                 D1list.append(D1.reshape(-1,))
                                 D2list.append(D2.reshape(-1,))
-
-                                pl.clf()
-                                pl.subplot(3,2,1)
-                                pl.plot(np.array(SIR_list), linewidth = 5)
-                                pl.xlabel("Number of Iterations / {}".format(debug_iteration_point), fontsize = 45)
-                                pl.ylabel("SIR (dB)", fontsize = 45)
-                                pl.title("SIR Behaviour", fontsize = 45)
-                                pl.grid()
-                                # pl.title("Neural Dynamic Iteration Number : {}".format(str(oc)), fontsize = 45)
-                                pl.xticks(fontsize=45)
-                                pl.yticks(fontsize=45)
-
-                                pl.subplot(3,2,2)
-                                pl.plot(np.array(D1list), linewidth = 5)
-                                # pl.plot(np.array(D1maxlist))
-                                pl.grid()
-                                # pl.legend(["D1min", "D1max"])
-                                pl.title("Diagonal Values of D1", fontsize = 45)
-                                pl.xlabel("Number of Iterations / {}".format(debug_iteration_point), fontsize = 45)
-                                pl.xticks(fontsize=45)
-                                pl.yticks(fontsize=45)
-
-                                pl.subplot(3,2,3)
-                                pl.plot(np.array(D2list), linewidth = 5)
-                                # pl.plot(np.array(D2maxlist))
-                                pl.grid()
-                                # pl.legend(["D2min","D2max"])
-                                pl.title("Diagonal Values of D2", fontsize = 45)
-                                pl.xlabel("Number of Iterations / {}".format(debug_iteration_point), fontsize = 45)
-                                pl.xticks(fontsize=45)
-                                pl.yticks(fontsize=45)
-
-                                pl.subplot(3,2,4)
-                                pl.plot(np.array(SNR_list), linewidth = 5)
-                                pl.grid()
-                                pl.title("Component SNR Check", fontsize = 45)
-                                pl.ylabel("SNR (dB)", fontsize = 45)
-                                pl.xlabel("Number of Iterations / {}".format(debug_iteration_point), fontsize = 45)
-                                pl.xticks(fontsize=45)
-                                pl.yticks(fontsize=45)
-
-                                pl.subplot(3,2,5)
-                                pl.plot(np.array(self.SV_list), linewidth = 5)
-                                pl.grid()
-                                pl.title("Singular Value Check, Overall Matrix Rank: "+str(np.linalg.matrix_rank(P)) , fontsize = 45)
-                                pl.xlabel("Number of Iterations / {}".format(debug_iteration_point), fontsize = 45)
-                                pl.xticks(fontsize=45)
-                                pl.yticks(fontsize=45)
-
-                                pl.subplot(3,2,6)
-                                pl.plot(Y[:,idx[i_sample-25:i_sample]].T, linewidth = 5)
-                                pl.title("Y last 25", fontsize = 45)
-                                pl.grid()
-                                pl.xticks(fontsize=45)
-                                pl.yticks(fontsize=45)
-
-                                clear_output(wait=True)
-                                display(pl.gcf())  
+                                YforPlot = Y[:,idx[i_sample-25:i_sample]].T
+                                self.plot_for_debug(SIR_list, SNR_list, D1list, D2list, P, debug_iteration_point, YforPlot)
 
                             self.W_HX = W_HX
                             self.W_YH = W_YH
@@ -1171,89 +1101,19 @@ class OnlineWSMBSS:
                         try:
                             W = self.compute_overall_mapping_jit(beta, zeta, D1, D2, M_H, M_Y, W_HX, W_YH)
                             self.W = W
-
-                            T = W @ A
-                            Tabs = np.abs(T)
-                            P = np.zeros((s_dim, s_dim))
-
-                            for SourceIndex in range(s_dim):
-                                Tmax = np.max(Tabs[SourceIndex,:])
-                                Tabs[SourceIndex,:] = Tabs[SourceIndex,:]/Tmax
-                                P[SourceIndex,:] = Tabs[SourceIndex,:]>0.999
                             
-                            GG = P.T @ T
-                            _, SGG, _ = np.linalg.svd(GG)
+                            SINR_current, SNR_current, SGG, Y_, P = self.evaluate_for_debug(W, A, S, X)
+
                             self.SV_list.append(abs(SGG))
 
-                            Y_ = W @ X
-                            Y_ = self.signed_and_permutation_corrected_sources(S.T,Y_.T)
-                            coef_ = (Y_ * S.T).sum(axis = 0) / (Y_ * Y_).sum(axis = 0)
-                            Y_ = coef_ * Y_
-                            self.Y_ = Y_
+                            SNR_list.append(SNR_current)
+                            SIR_list.append(SINR_current)
 
-                            SNR_list.append(self.snr_jit(S.T,Y_))
-                            SIR_list.append(10*np.log10(self.CalculateSINRjit(Y_.T, S)[0]))
                             if plot_in_jupyter:
                                 D1list.append(D1.reshape(-1,))
                                 D2list.append(D2.reshape(-1,))
-
-                                pl.clf()
-                                pl.subplot(3,2,1)
-                                pl.plot(np.array(SIR_list), linewidth = 5)
-                                pl.xlabel("Number of Iterations / {}".format(debug_iteration_point), fontsize = 45)
-                                pl.ylabel("SIR (dB)", fontsize = 45)
-                                pl.title("SIR Behaviour", fontsize = 45)
-                                pl.grid()
-                                # pl.title("Neural Dynamic Iteration Number : {}".format(str(oc)), fontsize = 45)
-                                pl.xticks(fontsize=45)
-                                pl.yticks(fontsize=45)
-
-                                pl.subplot(3,2,2)
-                                pl.plot(np.array(D1list), linewidth = 5)
-                                # pl.plot(np.array(D1maxlist))
-                                pl.grid()
-                                # pl.legend(["D1min", "D1max"])
-                                pl.title("Diagonal Values of D1", fontsize = 45)
-                                pl.xlabel("Number of Iterations / {}".format(debug_iteration_point), fontsize = 45)
-                                pl.xticks(fontsize=45)
-                                pl.yticks(fontsize=45)
-
-                                pl.subplot(3,2,3)
-                                pl.plot(np.array(D2list), linewidth = 5)
-                                # pl.plot(np.array(D2maxlist))
-                                pl.grid()
-                                # pl.legend(["D2min","D2max"])
-                                pl.title("Diagonal Values of D2", fontsize = 45)
-                                pl.xlabel("Number of Iterations / {}".format(debug_iteration_point), fontsize = 45)
-                                pl.xticks(fontsize=45)
-                                pl.yticks(fontsize=45)
-
-                                pl.subplot(3,2,4)
-                                pl.plot(np.array(SNR_list), linewidth = 5)
-                                pl.grid()
-                                pl.title("Component SNR Check", fontsize = 45)
-                                pl.ylabel("SNR (dB)", fontsize = 45)
-                                pl.xlabel("Number of Iterations / {}".format(debug_iteration_point), fontsize = 45)
-                                pl.xticks(fontsize=45)
-                                pl.yticks(fontsize=45)
-
-                                pl.subplot(3,2,5)
-                                pl.plot(np.array(self.SV_list), linewidth = 5)
-                                pl.grid()
-                                pl.title("Singular Value Check, Overall Matrix Rank: "+str(np.linalg.matrix_rank(P)) , fontsize = 45)
-                                pl.xlabel("Number of Iterations / {}".format(debug_iteration_point), fontsize = 45)
-                                pl.xticks(fontsize=45)
-                                pl.yticks(fontsize=45)
-
-                                pl.subplot(3,2,6)
-                                pl.plot(Y[:,idx[i_sample-25:i_sample]].T, linewidth = 5)
-                                pl.title("Y last 25", fontsize = 45)
-                                pl.grid()
-                                pl.xticks(fontsize=45)
-                                pl.yticks(fontsize=45)
-
-                                clear_output(wait=True)
-                                display(pl.gcf())  
+                                YforPlot = Y[:,idx[i_sample-25:i_sample]].T
+                                self.plot_for_debug(SIR_list, SNR_list, D1list, D2list, P, debug_iteration_point, YforPlot)
 
                             self.W_HX = W_HX
                             self.W_YH = W_YH
@@ -1351,6 +1211,36 @@ class OnlineWSMBSS:
 
                 if debugging:
                     if (i_sample % debug_iteration_point) == 0:
+                        # try:
+                        #     W = self.compute_overall_mapping_jit(beta, zeta, D1, D2, M_H, M_Y, W_HX, W_YH)
+                        #     self.W = W
+                            
+                        #     SINR_current, SNR_current, SGG, Y_, P = self.evaluate_for_debug(W, A, S, X)
+
+                        #     self.SV_list.append(abs(SGG))
+
+                        #     SNR_list.append(SNR_current)
+                        #     SIR_list.append(SINR_current)
+
+                        #     if plot_in_jupyter:
+                        #         D1list.append(D1.reshape(-1,))
+                        #         D2list.append(D2.reshape(-1,))
+                        #         YforPlot = Y[:,idx[i_sample-25:i_sample]].T
+                        #         self.plot_for_debug(SIR_list, SNR_list, D1list, D2list, P, debug_iteration_point, YforPlot)
+
+                        #     self.W_HX = W_HX
+                        #     self.W_YH = W_YH
+                        #     self.M_H = M_H
+                        #     self.M_Y = M_Y
+                        #     self.D1 = D1
+                        #     self.D2 = D2
+
+                        #     self.H = H
+                        #     self.Y = Y
+                        #     self.SIR_list = SIR_list
+                        #     self.SNR_list = SNR_list 
+                        # except Exception as e:
+                        #     print(str(e))
                         try:
                             W = self.compute_overall_mapping_jit(beta, zeta, D1, D2, M_H, M_Y, W_HX, W_YH)
                             self.W = W
@@ -1369,13 +1259,13 @@ class OnlineWSMBSS:
                             self.SV_list.append(abs(SGG))
 
                             Y_ = W @ X
-                            Y_ = self.signed_and_permutation_corrected_sources(S.T,Y_.T)
-                            coef_ = (Y_ * S.T).sum(axis = 0) / (Y_ * Y_).sum(axis = 0)
+                            Y_ = self.signed_and_permutation_corrected_sources(S,Y_)
+                            coef_ = coef_ = ((Y_ * S).sum(axis = 1) / (Y_ * Y_).sum(axis = 1)).reshape(-1,1)
                             Y_ = coef_ * Y_
                             self.Y_ = Y_
 
-                            SNR_list.append(self.snr_jit(S.T,Y_))
-                            SIR_list.append(10*np.log10(self.CalculateSINRjit(Y_.T, S)[0]))
+                            SNR_list.append(self.snr_jit(S,Y_))
+                            SIR_list.append(10*np.log10(self.CalculateSINRjit(Y_, S)[0]))
                             if plot_in_jupyter:
                                 D1list.append(D1.reshape(-1,))
                                 D2list.append(D2.reshape(-1,))
@@ -1535,11 +1425,6 @@ class OnlineWSMBSS:
 
                 if debugging:
                     if (i_sample % debug_iteration_point) == 0:
-                        # W = self.compute_overall_mapping_jit(beta, zeta, D1, D2, M_H, M_Y, W_HX, W_YH)
-                        # self.W = W
-                        
-                        # SINR_current, SNR_current, SGG, Y_ = self.evaluate_for_debug(W, A, Szeromean, X, mean_normalize_estimation = True)
-
                         try:
                             W = self.compute_overall_mapping_jit(beta, zeta, D1, D2, M_H, M_Y, W_HX, W_YH)
                             self.W = W
@@ -1668,91 +1553,19 @@ class OnlineWSMBSS:
                         try:
                             W = self.compute_overall_mapping_jit(beta, zeta, D1, D2, M_H, M_Y, W_HX, W_YH)
                             self.W = W
-
-                            T = W @ A
-                            Tabs = np.abs(T)
-                            P = np.zeros((s_dim, s_dim))
-
-                            for SourceIndex in range(s_dim):
-                                Tmax = np.max(Tabs[SourceIndex,:])
-                                Tabs[SourceIndex,:] = Tabs[SourceIndex,:]/Tmax
-                                P[SourceIndex,:] = Tabs[SourceIndex,:]>0.999
                             
-                            GG = P.T @ T
-                            _, SGG, _ = np.linalg.svd(GG)
+                            SINR_current, SNR_current, SGG, Y_, P = self.evaluate_for_debug(W, A, Szeromean, X, mean_normalize_estimation = True)
+
                             self.SV_list.append(abs(SGG))
 
-                            Y_ = W @ X
-                            Yzeromean = Y_ - Y_.mean(axis = 1).reshape(-1,1)
-                            Y_ = self.signed_and_permutation_corrected_sources(Szeromean.T,Yzeromean.T)
-                            coef_ = (Y_ * Szeromean.T).sum(axis = 0) / (Y_ * Y_).sum(axis = 0)
-                            Y_ = coef_ * Y_
-                            self.Y_ = Y_ 
+                            SNR_list.append(SNR_current)
+                            SIR_list.append(SINR_current)
 
-                            SIR_list.append(10*np.log10(CalculateSINR(Y_.T, Szeromean, False)[0]))
-
-                            SNR_list.append(self.snr_jit(Szeromean.T,Y_))
                             if plot_in_jupyter:
                                 D1list.append(D1.reshape(-1,))
                                 D2list.append(D2.reshape(-1,))
-
-                                pl.clf()
-                                pl.subplot(3,2,1)
-                                pl.plot(np.array(SIR_list), linewidth = 5)
-                                pl.xlabel("Number of Iterations / {}".format(debug_iteration_point), fontsize = 45)
-                                pl.ylabel("SIR (dB)", fontsize = 45)
-                                pl.title("SIR Behaviour", fontsize = 45)
-                                pl.grid()
-                                # pl.title("Neural Dynamic Iteration Number : {}".format(str(oc)), fontsize = 45)
-                                pl.xticks(fontsize=45)
-                                pl.yticks(fontsize=45)
-
-                                pl.subplot(3,2,2)
-                                pl.plot(np.array(D1list), linewidth = 5)
-                                # pl.plot(np.array(D1maxlist))
-                                pl.grid()
-                                # pl.legend(["D1min", "D1max"])
-                                pl.title("Diagonal Values of D1", fontsize = 45)
-                                pl.xlabel("Number of Iterations / {}".format(debug_iteration_point), fontsize = 45)
-                                pl.xticks(fontsize=45)
-                                pl.yticks(fontsize=45)
-
-                                pl.subplot(3,2,3)
-                                pl.plot(np.array(D2list), linewidth = 5)
-                                # pl.plot(np.array(D2maxlist))
-                                pl.grid()
-                                # pl.legend(["D2min","D2max"])
-                                pl.title("Diagonal Values of D2", fontsize = 45)
-                                pl.xlabel("Number of Iterations / {}".format(debug_iteration_point), fontsize = 45)
-                                pl.xticks(fontsize=45)
-                                pl.yticks(fontsize=45)
-
-                                pl.subplot(3,2,4)
-                                pl.plot(np.array(SNR_list), linewidth = 5)
-                                pl.grid()
-                                pl.title("Component SNR Check", fontsize = 45)
-                                pl.ylabel("SNR (dB)", fontsize = 45)
-                                pl.xlabel("Number of Iterations / {}".format(debug_iteration_point), fontsize = 45)
-                                pl.xticks(fontsize=45)
-                                pl.yticks(fontsize=45)
-
-                                pl.subplot(3,2,5)
-                                pl.plot(np.array(self.SV_list), linewidth = 5)
-                                pl.grid()
-                                pl.title("Singular Value Check, Overall Matrix Rank: "+str(np.linalg.matrix_rank(P)) , fontsize = 45)
-                                pl.xlabel("Number of Iterations / {}".format(debug_iteration_point), fontsize = 45)
-                                pl.xticks(fontsize=45)
-                                pl.yticks(fontsize=45)
-
-                                pl.subplot(3,2,6)
-                                pl.plot(Y[:,idx[i_sample-25:i_sample]].T, linewidth = 5)
-                                pl.title("Y last 25", fontsize = 45)
-                                pl.grid()
-                                pl.xticks(fontsize=45)
-                                pl.yticks(fontsize=45)
-
-                                clear_output(wait=True)
-                                display(pl.gcf())  
+                                YforPlot = Y[:,idx[i_sample-25:i_sample]].T
+                                self.plot_for_debug(SIR_list, SNR_list, D1list, D2list, P, debug_iteration_point, YforPlot)
 
                             self.W_HX = W_HX
                             self.W_YH = W_YH

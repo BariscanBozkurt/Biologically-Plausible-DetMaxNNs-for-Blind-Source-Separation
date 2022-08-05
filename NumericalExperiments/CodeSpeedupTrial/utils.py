@@ -202,7 +202,8 @@ def find_permutation_between_source_and_estimation(S,Y):
 
 def signed_and_permutation_corrected_sources(S,Y):
     perm = find_permutation_between_source_and_estimation(S,Y)
-    return np.sign((Y[perm,:] * S).sum(axis = 0)) * Y[perm,:]
+    return (np.sign((Y[perm,:] * S).sum(axis = 1))[:,np.newaxis]) * Y[perm,:]
+    # return np.sign((Y[perm,:] * S).sum(axis = 0)) * Y[perm,:]
 
 def ProjectRowstoL1NormBall(H):
     Hshape=H.shape
