@@ -413,7 +413,8 @@ class OnlineWSMBSS:
     @staticmethod
     @njit
     def run_neural_dynamics_antisparse_jit(x_current, h, y, M_H, M_Y, W_HX, W_YH, D1, D2, beta, zeta, 
-                                           neural_dynamic_iterations, lr_start, lr_stop, OUTPUT_COMP_TOL):
+                                           neural_dynamic_iterations, lr_start, lr_stop, 
+                                           lr_rule, hidden_layer_gain = 2, OUTPUT_COMP_TOL = 1e-7):
         """_summary_
 
         Args:
@@ -461,12 +462,17 @@ class OnlineWSMBSS:
         OutputCounter = 0
         while MembraneVoltageNotSettled & (OutputCounter < neural_dynamic_iterations):
             OutputCounter += 1
-            MUV = max(lr_start/(1+OutputCounter*0.005), lr_stop)
+            if lr_rule == "constant":
+                MUV = lr_start
+            elif lr_rule == "divide_by_loop_index":
+                MUV = max(lr_start/(1+OutputCounter), lr_stop)
+            elif lr_rule == "divide_by_slow_loop_index":
+                MUV = max(lr_start/(1+OutputCounter*0.005), lr_stop)
 
             delv = -v + mat_factor1 @ x_current - mat_factor2 @ h + mat_factor3 @ y
             v = v + MUV * delv
             h = v / np.diag(mat_factor4)
-
+            h = np.clip(h, -hidden_layer_gain, hidden_layer_gain)
             delu = -u + W_YH @ h - mat_factor5 @ y
             u = u + MUV * delu
             y = u / np.diag(mat_factor6)
@@ -1002,7 +1008,15 @@ class OnlineWSMBSS:
     ## THESE FUNCTIONS ALSO FIT IN ONLY MANNER. YOU CAN CONSIDER      ##
     ## THEM AS EXTENSIONS OF FIT NEXT FUNCTIONS ABOVE (FOR DEBUGGING) ##
     ####################################################################
-    def fit_batch_antisparse(self, X, n_epochs = 5, neural_dynamic_iterations = 750, neural_lr_start = 0.2, neural_lr_stop = 0.05, shuffle = True, debug_iteration_point = 1000, plot_in_jupyter = False):
+    def fit_batch_antisparse(self, X, n_epochs = 5, neural_dynamic_iterations = 750, neural_lr_start = 0.2, neural_lr_stop = 0.05, 
+                             synaptic_lr_rule = "divide_by_log_index", neural_loop_lr_rule = "divide_by_slow_loop_index",
+                             hidden_layer_gain = 10, clip_gain_gradients = False, shuffle = True, debug_iteration_point = 1000,
+                             plot_in_jupyter = False):
+
+                            #  (self, X, n_epochs = 5, neural_dynamic_iterations = 750, neural_lr_start = 0.2, neural_lr_stop = 0.05, 
+                            #    synaptic_lr_rule = "divide_by_log_index", neural_loop_lr_rule = "divide_by_slow_loop_index", 
+                            #    hidden_layer_gain = 10, clip_gain_gradients = True, shuffle = True, debug_iteration_point = 1000, 
+                            #    plot_in_jupyter = False)
         """_summary_
 
         Args:
@@ -1064,12 +1078,18 @@ class OnlineWSMBSS:
                                                                  D1 = D1, D2 = D2, beta = beta, zeta = zeta, 
                                                                  neural_dynamic_iterations = neural_dynamic_iterations, 
                                                                  lr_start = neural_lr_start, lr_stop = neural_lr_stop, 
+                                                                 lr_rule = neural_loop_lr_rule, hidden_layer_gain = hidden_layer_gain,
                                                                  OUTPUT_COMP_TOL = neural_OUTPUT_COMP_TOL)
 
-                MUS = np.max([gamma_start/(1+np.log(2 + i_sample)),gamma_stop])
+                if synaptic_lr_rule == "constant":
+                    MUS = gamma_start
+                elif synaptic_lr_rule == "divide_by_log_index":
+                    MUS = np.max([gamma_start/(1 + np.log(2 + i_sample)), gamma_stop])
+                elif synaptic_lr_rule == "divide_by_index":
+                    MUS = np.max([gamma_start/(i_sample + 1), gamma_stop])
 
                 W_HX, W_YH, M_H, M_Y, D1, D2 = self.update_weights_jit(x_current, h, y, zeta, beta, W_HX, W_YH, M_H, M_Y, 
-                                                                       D1, D2, MUS, muD, LayerMinimumGains, LayerMaximumGains )
+                                                                       D1, D2, MUS, muD, LayerMinimumGains, LayerMaximumGains, clip_gain_gradients )
 
                 Y[:,idx[i_sample]] = y
                 H[:,idx[i_sample]] = h
