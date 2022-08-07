@@ -1084,7 +1084,8 @@ class OnlineWSMBSS:
                 if synaptic_lr_rule == "constant":
                     MUS = gamma_start
                 elif synaptic_lr_rule == "divide_by_log_index":
-                    MUS = np.max([gamma_start/(1 + np.log(2 + i_sample)), gamma_stop])
+                    # MUS = np.max([gamma_start/(1 + np.log(2 + (i_sample))), gamma_stop])
+                    MUS = np.max([gamma_start/(1 + np.log(2 + (i_sample//5000))), gamma_stop])
                 elif synaptic_lr_rule == "divide_by_index":
                     MUS = np.max([gamma_start/(i_sample + 1), gamma_stop])
 
@@ -1178,6 +1179,7 @@ class OnlineWSMBSS:
             SNR_list = self.SNR_list
             S = self.S
             A = self.A 
+            Szeromean = S - S.mean(axis = 1).reshape(-1,1)
             plt.figure(figsize = (70, 50), dpi = 80)
 
         for k in range(n_epochs):
@@ -1209,7 +1211,8 @@ class OnlineWSMBSS:
                 if synaptic_lr_rule == "constant":
                     MUS = gamma_start
                 elif synaptic_lr_rule == "divide_by_log_index":
-                    MUS = np.max([gamma_start/(1 + np.log(2 + i_sample)), gamma_stop])
+                    # MUS = np.max([gamma_start/(1 + np.log(2 + i_sample)), gamma_stop])
+                    MUS = np.max([gamma_start/(1 + np.log(2 + (i_sample//5000))), gamma_stop])
                 elif synaptic_lr_rule == "divide_by_index":
                     MUS = np.max([gamma_start/(i_sample + 1), gamma_stop])
 
@@ -1225,7 +1228,7 @@ class OnlineWSMBSS:
                             W = self.compute_overall_mapping_jit(beta, zeta, D1, D2, M_H, M_Y, W_HX, W_YH)
                             self.W = W
                             
-                            SINR_current, SNR_current, SGG, Y_, P = self.evaluate_for_debug(W, A, S, X)
+                            SINR_current, SNR_current, SGG, Y_, P = self.evaluate_for_debug(W, A, Szeromean, X, mean_normalize_estimation = True)
 
                             self.SV_list.append(abs(SGG))
 
