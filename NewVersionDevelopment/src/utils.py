@@ -155,14 +155,14 @@ def Subplot_gray_images(I, image_shape = [512,512], height = 15, width = 15, tit
 
 def subplot_1D_signals(X, title = '',title_fontsize = 20, figsize = (10,5), linewidth = 1, colorcode = '#050C12'):
     """
-    Plot the 1D signals (each column from the given matrix)
+    Plot the 1D signals (each row from the given matrix)
     """
-    n = X.shape[1] # Number of signals
+    n = X.shape[0] # Number of signals
     
     fig, ax = plt.subplots(n,1, figsize = figsize)
     
     for i in range(n):
-        ax[i].plot(X[:,i], linewidth = linewidth, color = colorcode)
+        ax[i].plot(X[i,:], linewidth = linewidth, color = colorcode)
         ax[i].grid()
     
     plt.suptitle(title, fontsize = title_fontsize)

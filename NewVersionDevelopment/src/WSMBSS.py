@@ -362,7 +362,8 @@ class OnlineWSMBSS:
 
     @staticmethod
     @njit
-    def update_weights_jit(x_current, h, y, zeta, beta, W_HX, W_YH, M_H, M_Y, D1, D2, MUS, muD, LayerMinimumGains, LayerMaximumGains):
+    def update_weights_jit(x_current, h, y, zeta, beta, W_HX, W_YH, M_H, M_Y, D1, D2, MUS, muD, LayerMinimumGains, LayerMaximumGains,
+                           clip_gain_gradients = False):
         """_summary_
 
         Args:
@@ -393,10 +394,16 @@ class OnlineWSMBSS:
         W_YH = (1 - MUS) * W_YH + MUS * np.outer(y,h)
 
         D1derivative = (1 - zeta) * beta * (np.sum((np.abs(M_H)**2) * D1.T,axis=1) - np.sum(np.abs(W_HX)**2,axis=1)).reshape(-1,1)  + zeta * (1/D1)#+ zeta * self.dlogdet(D1)
-        D1 = D1 - muD[0] * D1derivative
+        if clip_gain_gradients:
+            D1 = D1 - clipping(muD[0] * D1derivative, D1 * 1)
+        else:
+            D1 = D1 - muD[0] * D1derivative
         D1 = np.clip(D1, LayerMinimumGains[0], LayerMaximumGains[0])
         D2derivative = (1 - zeta) * (1 - beta) * (np.sum((np.abs(M_Y)**2) * D2.T,axis=1) - np.sum(np.abs(W_YH)**2,axis=1)).reshape(-1,1)  + zeta * (1/D2)#+ zeta * self.dlogdet(D2)
-        D2 = D2 - muD[1] * D2derivative
+        if clip_gain_gradients:
+            D2 = D2 - clipping(muD[1] * D2derivative, D2 * 1) 
+        else:
+            D2 = D2 - muD[1] * D2derivative
         D2 = np.clip(D2, LayerMinimumGains[1], LayerMaximumGains[1])
         return W_HX, W_YH, M_H, M_Y, D1, D2
 
@@ -1113,7 +1120,8 @@ class OnlineWSMBSS:
 
     def fit_batch_nnantisparse(self, X, n_epochs = 5, neural_dynamic_iterations = 750, neural_lr_start = 0.2, neural_lr_stop = 0.05, 
                                synaptic_lr_rule = "divide_by_log_index", neural_loop_lr_rule = "divide_by_slow_loop_index", 
-                               hidden_layer_gain = 10, shuffle = True, debug_iteration_point = 1000, plot_in_jupyter = False):
+                               hidden_layer_gain = 10, clip_gain_gradients = True, shuffle = True, debug_iteration_point = 1000, 
+                               plot_in_jupyter = False):
         """_summary_
 
         Args:
@@ -1186,7 +1194,7 @@ class OnlineWSMBSS:
                     MUS = np.max([gamma_start/(i_sample + 1), gamma_stop])
 
                 W_HX, W_YH, M_H, M_Y, D1, D2 = self.update_weights_jit(x_current, h, y, zeta, beta, W_HX, W_YH, M_H, M_Y, 
-                                                                       D1, D2, MUS, muD, LayerMinimumGains, LayerMaximumGains )
+                                                                       D1, D2, MUS, muD, LayerMinimumGains, LayerMaximumGains, clip_gain_gradients )
 
                 Y[:,idx[i_sample]] = y
                 H[:,idx[i_sample]] = h
