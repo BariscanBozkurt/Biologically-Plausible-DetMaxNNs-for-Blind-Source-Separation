@@ -1,27 +1,17 @@
 import numpy as np
-import scipy
-import math
-from scipy.stats import invgamma, chi2, t
-from scipy import linalg
 import matplotlib.pyplot as plt
-from matplotlib.pyplot import plot, draw, show
 import matplotlib as mpl
 from tqdm import tqdm
-from numba import njit, jit
-import mne
-from mne.preprocessing import ICA
-import logging
-from time import time
-import os
+from numba import njit
 from IPython.display import display, Latex, Math, clear_output
 import pylab as pl
-from scipy.spatial import Delaunay
-from scipy.spatial import ConvexHull  
-from numpy.linalg import det
-from scipy.stats import dirichlet
-import itertools
-import pypoman
-from utils import *
+##### IMPORT MY UTILITY SCRIPTS #######
+from dsp_utils import *
+from bss_utils import *
+# from general_utils import *
+from numba_utils import *
+# from visualization_utils import * 
+
 mpl.rcParams['xtick.labelsize'] = 15
 mpl.rcParams['ytick.labelsize'] = 15
 
@@ -35,7 +25,8 @@ def clipping(inp,lev):
 class OnlineWSMBSS:
     """_summary_
     """
-    def __init__(self, s_dim, x_dim, h_dim = None, gamma_start = 0.2, gamma_stop = 0.001, beta = 0.5, zeta = 1e-4, muD = [25,25], 
+    def __init__(self, s_dim, x_dim, h_dim = None, gammaW_start = [0.2, 0.2], gammaW_stop = [0.001,0.001], 
+                 gammaM_start = [0.2, 0.2], gammaM_stop = [0.001,0.001], beta = 0.5, zeta = 1e-4, muD = [25,25], 
                  W_HX = None, W_YH = None, M_H = None, M_Y = None, D1 = None, D2 = None, WScalings = [0.0033,0.0033], 
                  GamScalings = [0.02, 0.02], DScalings = [25,1], LayerMinimumGains = [1e-6,1], LayerMaximumGains = [1e6,1], 
                  neural_OUTPUT_COMP_TOL = 1e-5, set_ground_truth = False, S = None, A = None ):
@@ -114,8 +105,18 @@ class OnlineWSMBSS:
         self.s_dim = s_dim
         self.h_dim = h_dim
         self.x_dim = x_dim
-        self.gamma_start = gamma_start
-        self.gamma_stop = gamma_stop
+        if isinstance(gammaM_start,list):
+            gammaM_start = np.array(gammaM_start)
+        if isinstance(gammaM_stop,list):
+            gammaM_stop = np.array(gammaM_stop)
+        if isinstance(gammaW_start,list):
+            gammaW_start = np.array(gammaW_start)
+        if isinstance(gammaW_stop,list):
+            gammaW_stop = np.array(gammaW_stop)
+        self.gammaM_start = gammaM_start
+        self.gammaM_stop = gammaM_stop
+        self.gammaW_start = gammaW_start
+        self.gammaW_stop = gammaW_stop
         self.beta = beta
         self.zeta = zeta
         self.muD = muD
@@ -362,8 +363,9 @@ class OnlineWSMBSS:
 
     @staticmethod
     @njit
-    def update_weights_jit(x_current, h, y, zeta, beta, W_HX, W_YH, M_H, M_Y, D1, D2, MUS, muD, LayerMinimumGains, LayerMaximumGains,
-                           clip_gain_gradients = False):
+    def update_weights_jit(x_current, h, y, zeta, beta, W_HX, W_YH, M_H, M_Y, D1, D2, 
+                           MU_MH, MU_MY, MU_WHX, MU_WYH, muD, LayerMinimumGains, 
+                           LayerMaximumGains, clip_gain_gradients = False):
         """_summary_
 
         Args:
@@ -387,11 +389,11 @@ class OnlineWSMBSS:
             out=inp*(np.abs(inp)<=lev)+lev*(inp>lev)-lev*(inp<-lev)
             return out
         
-        M_H = (1 - MUS) * M_H + MUS * np.outer(h,h)
-        W_HX = (1 - MUS) * W_HX + MUS * np.outer(h,x_current)
+        M_H = (1 - MU_MH) * M_H + MU_MH * np.outer(h,h)
+        W_HX = (1 - MU_WHX) * W_HX + MU_WHX * np.outer(h,x_current)
 
-        M_Y = (1 - MUS) * M_Y + MUS * np.outer(y,y)
-        W_YH = (1 - MUS) * W_YH + MUS * np.outer(y,h)
+        M_Y = (1 - MU_MY) * M_Y + MU_MY * np.outer(y,y)
+        W_YH = (1 - MU_WYH) * W_YH + MU_WYH * np.outer(y,h)
 
         D1derivative = (1 - zeta) * beta * (np.sum((np.abs(M_H)**2) * D1.T,axis=1) - np.sum(np.abs(W_HX)**2,axis=1)).reshape(-1,1)  + zeta * (1/D1)#+ zeta * self.dlogdet(D1)
         if clip_gain_gradients:
@@ -414,7 +416,8 @@ class OnlineWSMBSS:
     @njit
     def run_neural_dynamics_antisparse_jit(x_current, h, y, M_H, M_Y, W_HX, W_YH, D1, D2, beta, zeta, 
                                            neural_dynamic_iterations, lr_start, lr_stop, 
-                                           lr_rule, hidden_layer_gain = 2, OUTPUT_COMP_TOL = 1e-7):
+                                           lr_rule, lr_decay_multiplier = 0.01,
+                                           hidden_layer_gain = 2, OUTPUT_COMP_TOL = 1e-7):
         """_summary_
 
         Args:
@@ -450,12 +453,12 @@ class OnlineWSMBSS:
         mat_factor1 = (1 - zeta) * beta * (D1 * W_HX)
         mat_factor2 = ((1 - zeta) * (1 - beta) * M_hat_H  + (1- zeta) * beta * ((D1 * M_hat_H) * D1.T))
         mat_factor3 = (1 - zeta) * (1 - beta) * (W_YH.T * D2.T)
-        mat_factor4 = (1 - zeta) * Gamma_H * ((1 - beta) + beta * D1 ** 2)
+        mat_factor4 = (1 - zeta) * Gamma_H * ((1 - beta) + beta * (D1.T) ** 2)
         mat_factor5 = M_hat_Y * D2.T
-        mat_factor6 = Gamma_Y * D2
+        mat_factor6 = Gamma_Y * D2.T
         
-        v = mat_factor4 @ h
-        u = mat_factor6 @ y
+        v = mat_factor4[0] * h
+        u = mat_factor6[0] * y
         
         PreviousMembraneVoltages = {'v': np.zeros_like(v), 'u': np.zeros_like(u)}
         MembraneVoltageNotSettled = 1
@@ -467,15 +470,15 @@ class OnlineWSMBSS:
             elif lr_rule == "divide_by_loop_index":
                 MUV = max(lr_start/(1+OutputCounter), lr_stop)
             elif lr_rule == "divide_by_slow_loop_index":
-                MUV = max(lr_start/(1+OutputCounter*0.005), lr_stop)
+                MUV = max(lr_start/(1+OutputCounter*lr_decay_multiplier), lr_stop)
 
             delv = -v + mat_factor1 @ x_current - mat_factor2 @ h + mat_factor3 @ y
             v = v + MUV * delv
-            h = v / np.diag(mat_factor4)
+            h = v / mat_factor4[0]
             h = np.clip(h, -hidden_layer_gain, hidden_layer_gain)
             delu = -u + W_YH @ h - mat_factor5 @ y
             u = u + MUV * delu
-            y = u / np.diag(mat_factor6)
+            y = u / mat_factor6[0]
             y = np.clip(y, -1, 1)
 
             MembraneVoltageNotSettled = 0
@@ -490,7 +493,8 @@ class OnlineWSMBSS:
     @njit
     def run_neural_dynamics_nnantisparse_jit(x_current, h, y, M_H, M_Y, W_HX, W_YH, D1, D2, beta, zeta, 
                                              neural_dynamic_iterations, lr_start, lr_stop, 
-                                             lr_rule, hidden_layer_gain = 2, use_hopfield = True, OUTPUT_COMP_TOL = 1e-7):
+                                             lr_rule, lr_decay_multiplier = 0.01, hidden_layer_gain = 2, 
+                                             use_hopfield = True, OUTPUT_COMP_TOL = 1e-7):
         """_summary_
 
         Args:
@@ -532,12 +536,12 @@ class OnlineWSMBSS:
         mat_factor1 = (1 - zeta) * beta * (D1 * W_HX)
         mat_factor2 = ((1 - zeta) * (1 - beta) * M_hat_H  + (1- zeta) * beta * ((D1 * M_hat_H) * D1.T))
         mat_factor3 = (1 - zeta) * (1 - beta) * (W_YH.T * D2.T)
-        mat_factor4 = (1 - zeta) * Gamma_H * ((1 - beta) + beta * D1 ** 2)
+        mat_factor4 = (1 - zeta) * Gamma_H * ((1 - beta) + beta * (D1.T) ** 2)
         mat_factor5 = M_hat_Y * D2.T
-        mat_factor6 = Gamma_Y * D2
-        # mat_factor6 = (1 - zeta) * Gamma_Y * ((1 - beta) + beta * D2 ** 2)
-        v = mat_factor4 @ h
-        u = mat_factor6 @ y
+        mat_factor6 = Gamma_Y * D2.T
+        
+        v = mat_factor4[0] * h
+        u = mat_factor6[0] * y
         
         PreviousMembraneVoltages = {'v': np.zeros_like(v), 'u': np.zeros_like(u)}
         MembraneVoltageNotSettled = 1
@@ -549,15 +553,15 @@ class OnlineWSMBSS:
             elif lr_rule == "divide_by_loop_index":
                 MUV = max(lr_start/(1+OutputCounter), lr_stop)
             elif lr_rule == "divide_by_slow_loop_index":
-                MUV = max(lr_start/(1+OutputCounter*0.005), lr_stop)
+                MUV = max(lr_start/(1+OutputCounter*lr_decay_multiplier), lr_stop)
 
             delv = -v + mat_factor1 @ x_current - mat_factor2 @ h + mat_factor3 @ y
             v = v + MUV * delv
-            h = v / np.diag(mat_factor4)
+            h = v / mat_factor4[0]
             h = np.clip(h, -hidden_layer_gain, hidden_layer_gain)
             delu = -u + W_YH @ h - mat_factor5 @ y
             u = u + MUV * delu
-            y = u / np.diag(mat_factor6)
+            y = u / mat_factor6[0]
             y = np.clip(y, 0, 1)
 
             MembraneVoltageNotSettled = 0
@@ -572,8 +576,8 @@ class OnlineWSMBSS:
     @njit
     def run_neural_dynamics_sparse_jit(x_current, h, y, M_H, M_Y, W_HX, W_YH, D1, D2, beta, zeta, 
                                        neural_dynamic_iterations, lr_start, lr_stop, 
-                                       lr_rule, stlambd_lr = 1, hidden_layer_gain = 100, 
-                                       mixtures_power_normalized = False, OUTPUT_COMP_TOL = 1e-7):
+                                       lr_rule, lr_decay_multiplier = 0.005, stlambd_lr = 1, 
+                                       hidden_layer_gain = 100, mixtures_power_normalized = False, OUTPUT_COMP_TOL = 1e-7):
         def offdiag(A, return_diag = False):
             """_summary_
 
@@ -602,15 +606,16 @@ class OnlineWSMBSS:
         mat_factor1 = (1 - zeta) * beta * (D1 * W_HX)
         mat_factor2 = ((1 - zeta) * (1 - beta) * M_hat_H  + (1- zeta) * beta * ((D1 * M_hat_H) * D1.T))
         mat_factor3 = (1 - zeta) * (1 - beta) * (W_YH.T * D2.T)
-        mat_factor4 = (1 - zeta) * Gamma_H * ((1 - beta) + beta * D1 ** 2)
+        mat_factor4 = (1 - zeta) * Gamma_H * ((1 - beta) + beta * (D1.T) ** 2)
         mat_factor5 = M_hat_Y * D2.T
-        mat_factor6 = Gamma_Y * D2
+        mat_factor6 = Gamma_Y * D2.T
         if mixtures_power_normalized:
-            mat_factor6 = (1 - zeta) * Gamma_Y * ((1 - beta) + beta * D2 ** 2)
+            mat_factor6 = (1 - zeta) * Gamma_Y * ((1 - beta) + beta * D2.T ** 2)
+            # mat_factor6 = (1 - zeta) * Gamma_Y * ((1 - beta) * D2.T ** 2)
 
-        v = mat_factor4 @ h
-        u = mat_factor6 @ y
-        
+        v = mat_factor4[0] * h
+        u = mat_factor6[0] * y
+
         STLAMBD = 0
         PreviousMembraneVoltages = {'v': np.zeros_like(v), 'u': np.zeros_like(u)}
         MembraneVoltageNotSettled = 1
@@ -622,17 +627,17 @@ class OnlineWSMBSS:
             elif lr_rule == "divide_by_loop_index":
                 MUV = max(lr_start/(1+OutputCounter), lr_stop)
             elif lr_rule == "divide_by_slow_loop_index":
-                MUV = max(lr_start/(1+OutputCounter*0.005), lr_stop)
+                MUV = max(lr_start/(1+OutputCounter*lr_decay_multiplier), lr_stop)
 
             delv = -v + mat_factor1 @ x_current - mat_factor2 @ h + mat_factor3 @ y
             v = v + MUV * delv
-            h = v / np.diag(mat_factor4)
+            h = v / mat_factor4[0]
             h = np.clip(h, -hidden_layer_gain, hidden_layer_gain)
             delu = -u + W_YH @ h - mat_factor5 @ y
             u = u + MUV * delu
-            y = u / np.diag(mat_factor6)
+            y = u / mat_factor6[0]
             y = SoftThresholding(y, STLAMBD)
-            y = np.clip(y, -1, 1)
+            # y = np.clip(y, -1, 1)
 
             dval = np.linalg.norm(y,1) - 1
             
@@ -650,7 +655,8 @@ class OnlineWSMBSS:
     @njit
     def run_neural_dynamics_nnsparse_jit(x_current, h, y, M_H, M_Y, W_HX, W_YH, D1, D2, beta, zeta, 
                                          neural_dynamic_iterations, lr_start, lr_stop, 
-                                         lr_rule, stlambd_lr = 0.2, hidden_layer_gain = 100, OUTPUT_COMP_TOL = 1e-7):
+                                         lr_rule, lr_decay_multiplier = 0.005, stlambd_lr = 0.2, 
+                                         hidden_layer_gain = 100, OUTPUT_COMP_TOL = 1e-7):
         def offdiag(A, return_diag = False):
             """_summary_
 
@@ -673,13 +679,12 @@ class OnlineWSMBSS:
         mat_factor1 = (1 - zeta) * beta * (D1 * W_HX)
         mat_factor2 = ((1 - zeta) * (1 - beta) * M_hat_H  + (1- zeta) * beta * ((D1 * M_hat_H) * D1.T))
         mat_factor3 = (1 - zeta) * (1 - beta) * (W_YH.T * D2.T)
-        mat_factor4 = (1 - zeta) * Gamma_H * ((1 - beta) + beta * D1 ** 2)
+        mat_factor4 = (1 - zeta) * Gamma_H * ((1 - beta) + beta * (D1.T) ** 2)
         mat_factor5 = M_hat_Y * D2.T
-        mat_factor6 = Gamma_Y * D2
-        # mat_factor6 = (1 - zeta) * Gamma_Y * ((1 - beta) + beta * D2 ** 2)
-
-        v = mat_factor4 @ h
-        u = mat_factor6 @ y
+        mat_factor6 = Gamma_Y * D2.T
+        
+        v = mat_factor4[0] * h
+        u = mat_factor6[0] * y
         
         STLAMBD = 0
         PreviousMembraneVoltages = {'v': np.zeros_like(v), 'u': np.zeros_like(u)}
@@ -692,15 +697,15 @@ class OnlineWSMBSS:
             elif lr_rule == "divide_by_loop_index":
                 MUV = max(lr_start/(1+OutputCounter), lr_stop)
             elif lr_rule == "divide_by_slow_loop_index":
-                MUV = max(lr_start/(1+OutputCounter*0.005), lr_stop)
+                MUV = max(lr_start/(1+OutputCounter*lr_decay_multiplier), lr_stop)
 
             delv = -v + mat_factor1 @ x_current - mat_factor2 @ h + mat_factor3 @ y
             v = v + MUV * delv
-            h = v / np.diag(mat_factor4)
+            h = v / mat_factor4[0]
             h = np.clip(h, -hidden_layer_gain, hidden_layer_gain)
             delu = -u + W_YH @ h - mat_factor5 @ y
             u = u + MUV * delu
-            y = u / np.diag(mat_factor6)
+            y = u / mat_factor6[0]
             y = np.maximum(y - STLAMBD, 0)
             # y = np.clip(y, 0, 1)
 
@@ -720,7 +725,8 @@ class OnlineWSMBSS:
     @njit
     def run_neural_dynamics_simplex_jit(x_current, h, y, M_H, M_Y, W_HX, W_YH, D1, D2, beta, zeta, 
                                         neural_dynamic_iterations, lr_start, lr_stop, 
-                                        lr_rule, stlambd_lr = 0.05, hidden_layer_gain = 2, OUTPUT_COMP_TOL = 1e-7):
+                                        lr_rule, lr_decay_multiplier = 0.005, stlambd_lr = 0.01, 
+                                        hidden_layer_gain = 25, OUTPUT_COMP_TOL = 1e-7):
 
         def offdiag(A, return_diag = False):
             """_summary_
@@ -744,12 +750,12 @@ class OnlineWSMBSS:
         mat_factor1 = (1 - zeta) * beta * (D1 * W_HX)
         mat_factor2 = ((1 - zeta) * (1 - beta) * M_hat_H  + (1- zeta) * beta * ((D1 * M_hat_H) * D1.T))
         mat_factor3 = (1 - zeta) * (1 - beta) * (W_YH.T * D2.T)
-        mat_factor4 = (1 - zeta) * Gamma_H * ((1 - beta) + beta * D1 ** 2)
+        mat_factor4 = (1 - zeta) * Gamma_H * ((1 - beta) + beta * (D1.T) ** 2)
         mat_factor5 = M_hat_Y * D2.T
-        mat_factor6 = Gamma_Y * D2
+        mat_factor6 = Gamma_Y * D2.T
         
-        v = mat_factor4 @ h
-        u = mat_factor6 @ y
+        v = mat_factor4[0] * h
+        u = mat_factor6[0] * y
         
         STLAMBD = 0
         PreviousMembraneVoltages = {'v': np.zeros_like(v), 'u': np.zeros_like(u)}
@@ -762,16 +768,16 @@ class OnlineWSMBSS:
             elif lr_rule == "divide_by_loop_index":
                 MUV = max(lr_start/(1+OutputCounter), lr_stop)
             elif lr_rule == "divide_by_slow_loop_index":
-                MUV = max(lr_start/(1+OutputCounter*0.005), lr_stop)
+                MUV = max(lr_start/(1+OutputCounter*lr_decay_multiplier), lr_stop)
             # MUV = max(lr_start/(1+OutputCounter*0.005), lr_stop)
             delv = -v + mat_factor1 @ x_current - mat_factor2 @ h + mat_factor3 @ y
             v = v + MUV * delv
-            h = v / np.diag(mat_factor4)
-            # h = np.clip(h, -hidden_layer_gain, hidden_layer_gain)
-            h = h*(h>=-2.0)*(h<=2.0)+(h>2.0)*2.0-2.0*(h<-2.0)
+            h = v / mat_factor4[0]
+            h = np.clip(h, -hidden_layer_gain, hidden_layer_gain)
+            # h = h*(h>=-2.0)*(h<=2.0)+(h>2.0)*2.0-2.0*(h<-2.0)
             delu = -u + W_YH @ h - mat_factor5 @ y
             u = u + MUV * delu
-            y = u / np.diag(mat_factor6)
+            y = u / mat_factor6[0]
 
             y = np.maximum(y - STLAMBD, 0)
             dval = np.sum(y) - 1 
@@ -790,7 +796,8 @@ class OnlineWSMBSS:
     def run_neural_dynamics_general_polytope_jit( x_current, h, y, signed_dims, nn_dims, sparse_dims_list,
                                                   M_H, M_Y, W_HX, W_YH, D1, D2, beta, zeta, 
                                                   neural_dynamic_iterations, lr_start, lr_stop, 
-                                                  lr_rule, stlambd_lr = 1, hidden_layer_gain = 100, OUTPUT_COMP_TOL = 1e-7):
+                                                  lr_rule, lr_decay_multiplier = 0.005, stlambd_lr = 1, 
+                                                  hidden_layer_gain = 100, OUTPUT_COMP_TOL = 1e-7):
         def offdiag(A, return_diag = False):
             """_summary_
 
@@ -827,13 +834,12 @@ class OnlineWSMBSS:
         mat_factor1 = (1 - zeta) * beta * (D1 * W_HX)
         mat_factor2 = ((1 - zeta) * (1 - beta) * M_hat_H  + (1- zeta) * beta * ((D1 * M_hat_H) * D1.T))
         mat_factor3 = (1 - zeta) * (1 - beta) * (W_YH.T * D2.T)
-        mat_factor4 = (1 - zeta) * Gamma_H * ((1 - beta) + beta * D1 ** 2)
+        mat_factor4 = (1 - zeta) * Gamma_H * ((1 - beta) + beta * (D1.T) ** 2)
         mat_factor5 = M_hat_Y * D2.T
-        mat_factor6 = Gamma_Y * D2
-        # mat_factor6 = (1 - zeta) * Gamma_Y * ((1 - beta) + beta * D2 ** 2)
-
-        v = mat_factor4 @ h
-        u = mat_factor6 @ y
+        mat_factor6 = Gamma_Y * D2.T
+        
+        v = mat_factor4[0] * h
+        u = mat_factor6[0] * y
         
         STLAMBD_list = np.zeros(len(sparse_dims_list))
         PreviousMembraneVoltages = {'v': np.zeros_like(v), 'u': np.zeros_like(u)}
@@ -846,15 +852,15 @@ class OnlineWSMBSS:
             elif lr_rule == "divide_by_loop_index":
                 MUV = max(lr_start/(1+OutputCounter), lr_stop)
             elif lr_rule == "divide_by_slow_loop_index":
-                MUV = max(lr_start/(1+OutputCounter*0.005), lr_stop)
+                MUV = max(lr_start/(1+OutputCounter*lr_decay_multiplier), lr_stop)
 
             delv = -v + mat_factor1 @ x_current - mat_factor2 @ h + mat_factor3 @ y
             v = v + MUV * delv
-            h = v / np.diag(mat_factor4)
+            h = v / mat_factor4[0]
             h = np.clip(h, -hidden_layer_gain, hidden_layer_gain)
             delu = -u + W_YH @ h - mat_factor5 @ y
             u = u + MUV * delu
-            y = u / np.diag(mat_factor6)
+            y = u / mat_factor6[0]
             if sparse_dims_list[0][0] != -1:
                 for ss,sparse_dim in enumerate(sparse_dims_list):
                     # y[sparse_dim] = SoftThresholding(y[sparse_dim], STLAMBD_list[ss])
@@ -869,88 +875,6 @@ class OnlineWSMBSS:
             if nn_dims[0] != -1:
                 y[nn_dims] = np.clip(y[nn_dims], 0, 1)
 
-
-            MembraneVoltageNotSettled = 0
-            if (np.linalg.norm(v - PreviousMembraneVoltages['v'])/np.linalg.norm(v) > OUTPUT_COMP_TOL) | (np.linalg.norm(u - PreviousMembraneVoltages['u'])/np.linalg.norm(u) > OUTPUT_COMP_TOL):
-                MembraneVoltageNotSettled = 1
-            PreviousMembraneVoltages['v'] = v
-            PreviousMembraneVoltages['u'] = u
-
-        return h,y, OutputCounter
-
-    @staticmethod
-    @njit
-    def run_neural_dynamics_ica_jit(x_current, h, y, M_H, M_Y, W_HX, W_YH, D1, D2, beta, zeta, 
-                                    neural_dynamic_iterations, lr_start, lr_stop, 
-                                    lr_rule, hidden_layer_gain = 2, OUTPUT_COMP_TOL = 1e-7):
-        """_summary_
-
-        Args:
-            x_current (_type_): _description_
-            h (_type_): _description_
-            y (_type_): _description_
-            M_H (_type_): _description_
-            M_Y (_type_): _description_
-            W_HX (_type_): _description_
-            W_YH (_type_): _description_
-            D1 (_type_): _description_
-            D2 (_type_): _description_
-            beta (_type_): _description_
-            zeta (_type_): _description_
-            neural_dynamic_iterations (_type_): _description_
-            lr_start (_type_): _description_
-            lr_stop (_type_): _description_
-            OUTPUT_COMP_TOL (_type_): _description_
-        """
-        def offdiag(A, return_diag = False):
-            """_summary_
-
-            Args:
-                A (_type_): _description_
-                return_diag (bool, optional): _description_. Defaults to False.
-
-            Returns:
-                _type_: _description_
-            """
-            if return_diag:
-                diag = np.diag(A)
-                return A - np.diag(diag), diag
-            else:
-                return A - np.diag(diag)
-        
-        M_hat_H, Gamma_H = offdiag(M_H, True)
-        M_hat_Y, Gamma_Y = offdiag(M_Y, True)
-        
-        mat_factor1 = (1 - zeta) * beta * (D1 * W_HX)
-        mat_factor2 = ((1 - zeta) * (1 - beta) * M_hat_H  + (1- zeta) * beta * ((D1 * M_hat_H) * D1.T))
-        mat_factor3 = (1 - zeta) * (1 - beta) * (W_YH.T * D2.T)
-        mat_factor4 = (1 - zeta) * Gamma_H * ((1 - beta) + beta * D1 ** 2)
-        mat_factor5 = M_hat_Y * D2.T
-        mat_factor6 = Gamma_Y * D2
-        
-        v = mat_factor4 @ h
-        u = mat_factor6 @ y
-        
-        PreviousMembraneVoltages = {'v': np.zeros_like(v), 'u': np.zeros_like(u)}
-        MembraneVoltageNotSettled = 1
-        OutputCounter = 0
-        while MembraneVoltageNotSettled & (OutputCounter < neural_dynamic_iterations):
-            OutputCounter += 1
-            if lr_rule == "constant":
-                MUV = lr_start
-            elif lr_rule == "divide_by_loop_index":
-                MUV = max(lr_start/(1+OutputCounter), lr_stop)
-            elif lr_rule == "divide_by_slow_loop_index":
-                MUV = max(lr_start/(1+OutputCounter*0.005), lr_stop)
-
-            delv = -v + mat_factor1 @ x_current - mat_factor2 @ h + mat_factor3 @ y
-            v = v + MUV * delv
-            h = v / np.diag(mat_factor4)
-            h = np.clip(h, -hidden_layer_gain, hidden_layer_gain)
-            delu = -u + W_YH @ h - mat_factor5 @ y
-            u = u + MUV * delu
-            y = u / np.diag(mat_factor6)
-            y = np.tanh(y)
 
             MembraneVoltageNotSettled = 0
             if (np.linalg.norm(v - PreviousMembraneVoltages['v'])/np.linalg.norm(v) > OUTPUT_COMP_TOL) | (np.linalg.norm(u - PreviousMembraneVoltages['u'])/np.linalg.norm(u) > OUTPUT_COMP_TOL):
@@ -1009,7 +933,8 @@ class OnlineWSMBSS:
     ## THEM AS EXTENSIONS OF FIT NEXT FUNCTIONS ABOVE (FOR DEBUGGING) ##
     ####################################################################
     def fit_batch_antisparse(self, X, n_epochs = 5, neural_dynamic_iterations = 750, neural_lr_start = 0.2, neural_lr_stop = 0.05, 
-                             synaptic_lr_rule = "divide_by_log_index", neural_loop_lr_rule = "divide_by_slow_loop_index",
+                             synaptic_lr_rule = "divide_by_log_index", neural_loop_lr_rule = "divide_by_slow_loop_index", 
+                             synaptic_lr_decay_divider = 5000, neural_lr_decay_multiplier = 0.005,
                              hidden_layer_gain = 10, clip_gain_gradients = False, shuffle = True, debug_iteration_point = 1000,
                              plot_in_jupyter = False):
 
@@ -1029,7 +954,7 @@ class OnlineWSMBSS:
             debug_iteration_point (int, optional): _description_. Defaults to 1000.
             plot_in_jupyter (bool, optional): _description_. Defaults to False.
         """
-        gamma_start, gamma_stop, beta, zeta, muD, W_HX, W_YH, M_H, M_Y, D1, D2 = self.gamma_start, self.gamma_stop, self.beta, self.zeta, np.array(self.muD), self.W_HX, self.W_YH, self.M_H, self.M_Y, self.D1, self.D2
+        gammaM_start, gammaM_stop, gammaW_start, gammaW_stop, beta, zeta, muD, W_HX, W_YH, M_H, M_Y, D1, D2 = self.gammaM_start, self.gammaM_stop, self.gammaW_start, self.gammaW_stop, self.beta, self.zeta, np.array(self.muD), self.W_HX, self.W_YH, self.M_H, self.M_Y, self.D1, self.D2
         LayerMinimumGains = self.LayerMinimumGains
         LayerMaximumGains = self.LayerMaximumGains
         neural_OUTPUT_COMP_TOL = self.neural_OUTPUT_COMP_TOL
@@ -1078,19 +1003,31 @@ class OnlineWSMBSS:
                                                                  D1 = D1, D2 = D2, beta = beta, zeta = zeta, 
                                                                  neural_dynamic_iterations = neural_dynamic_iterations, 
                                                                  lr_start = neural_lr_start, lr_stop = neural_lr_stop, 
-                                                                 lr_rule = neural_loop_lr_rule, hidden_layer_gain = hidden_layer_gain,
+                                                                 lr_rule = neural_loop_lr_rule, 
+                                                                 lr_decay_multiplier = neural_lr_decay_multiplier,
+                                                                 hidden_layer_gain = hidden_layer_gain,
                                                                  OUTPUT_COMP_TOL = neural_OUTPUT_COMP_TOL)
 
                 if synaptic_lr_rule == "constant":
-                    MUS = gamma_start
+                    MU_MH = gammaM_start[0]
+                    MU_MY = gammaM_start[1]
+                    MU_WHX = gammaW_start[0]
+                    MU_WYH = gammaW_start[1]
                 elif synaptic_lr_rule == "divide_by_log_index":
                     # MUS = np.max([gamma_start/(1 + np.log(2 + (i_sample))), gamma_stop])
-                    MUS = np.max([gamma_start/(1 + np.log(2 + (i_sample//5000))), gamma_stop])
+                    MU_MH = np.max([gammaM_start[0]/(1 + np.log(2 + (i_sample//synaptic_lr_decay_divider))), gammaM_stop[0]])
+                    MU_MY = np.max([gammaM_start[1]/(1 + np.log(2 + (i_sample//synaptic_lr_decay_divider))), gammaM_stop[1]])
+                    MU_WHX = np.max([gammaW_start[0]/(1 + np.log(2 + (i_sample//synaptic_lr_decay_divider))), gammaW_stop[0]])
+                    MU_WYH = np.max([gammaW_start[1]/(1 + np.log(2 + (i_sample//synaptic_lr_decay_divider))), gammaW_stop[1]])
                 elif synaptic_lr_rule == "divide_by_index":
-                    MUS = np.max([gamma_start/(i_sample + 1), gamma_stop])
+                    MU_MH = np.max([gammaM_start[0]/(i_sample//synaptic_lr_decay_divider + 1), gammaM_stop[0]])
+                    MU_MY = np.max([gammaM_start[1]/(i_sample//synaptic_lr_decay_divider + 1), gammaM_stop[1]])
+                    MU_WHX = np.max([gammaW_start[0]/(i_sample//synaptic_lr_decay_divider + 1), gammaW_stop[0]])
+                    MU_WYH= np.max([gammaW_start[1]/(i_sample//synaptic_lr_decay_divider + 1), gammaW_stop[1]])
 
                 W_HX, W_YH, M_H, M_Y, D1, D2 = self.update_weights_jit(x_current, h, y, zeta, beta, W_HX, W_YH, M_H, M_Y, 
-                                                                       D1, D2, MUS, muD, LayerMinimumGains, LayerMaximumGains, clip_gain_gradients )
+                                                                       D1, D2, MU_MH, MU_MY, MU_WHX, MU_WYH, muD, 
+                                                                       LayerMinimumGains, LayerMaximumGains, clip_gain_gradients )
 
                 Y[:,idx[i_sample]] = y
                 H[:,idx[i_sample]] = h
@@ -1141,6 +1078,7 @@ class OnlineWSMBSS:
 
     def fit_batch_nnantisparse(self, X, n_epochs = 5, neural_dynamic_iterations = 750, neural_lr_start = 0.2, neural_lr_stop = 0.05, 
                                synaptic_lr_rule = "divide_by_log_index", neural_loop_lr_rule = "divide_by_slow_loop_index", 
+                               synaptic_lr_decay_divider = 5000, neural_lr_decay_multiplier = 0.005,
                                hidden_layer_gain = 10, clip_gain_gradients = True, shuffle = True, debug_iteration_point = 1000, 
                                plot_in_jupyter = False):
         """_summary_
@@ -1155,7 +1093,7 @@ class OnlineWSMBSS:
             debug_iteration_point (int, optional): _description_. Defaults to 1000.
             plot_in_jupyter (bool, optional): _description_. Defaults to False.
         """
-        gamma_start, gamma_stop, beta, zeta, muD, W_HX, W_YH, M_H, M_Y, D1, D2 = self.gamma_start, self.gamma_stop, self.beta, self.zeta, np.array(self.muD), self.W_HX, self.W_YH, self.M_H, self.M_Y, self.D1, self.D2
+        gammaM_start, gammaM_stop, gammaW_start, gammaW_stop, beta, zeta, muD, W_HX, W_YH, M_H, M_Y, D1, D2 = self.gammaM_start, self.gammaM_stop, self.gammaW_start, self.gammaW_stop, self.beta, self.zeta, np.array(self.muD), self.W_HX, self.W_YH, self.M_H, self.M_Y, self.D1, self.D2
         LayerMinimumGains = self.LayerMinimumGains
         LayerMaximumGains = self.LayerMaximumGains
         debugging = self.set_ground_truth
@@ -1209,16 +1147,25 @@ class OnlineWSMBSS:
                                                                    OUTPUT_COMP_TOL = neural_OUTPUT_COMP_TOL)
 
                 if synaptic_lr_rule == "constant":
-                    MUS = gamma_start
+                    MU_MH = gammaM_start[0]
+                    MU_MY = gammaM_start[1]
+                    MU_WHX = gammaW_start[0]
+                    MU_WYH = gammaW_start[1]
                 elif synaptic_lr_rule == "divide_by_log_index":
-                    # MUS = np.max([gamma_start/(1 + np.log(2 + i_sample)), gamma_stop])
-                    MUS = np.max([gamma_start/(1 + np.log(2 + (i_sample//5000))), gamma_stop])
+                    # MUS = np.max([gamma_start/(1 + np.log(2 + (i_sample))), gamma_stop])
+                    MU_MH = np.max([gammaM_start[0]/(1 + np.log(2 + (i_sample//synaptic_lr_decay_divider))), gammaM_stop[0]])
+                    MU_MY = np.max([gammaM_start[1]/(1 + np.log(2 + (i_sample//synaptic_lr_decay_divider))), gammaM_stop[1]])
+                    MU_WHX = np.max([gammaW_start[0]/(1 + np.log(2 + (i_sample//synaptic_lr_decay_divider))), gammaW_stop[0]])
+                    MU_WYH = np.max([gammaW_start[1]/(1 + np.log(2 + (i_sample//synaptic_lr_decay_divider))), gammaW_stop[1]])
                 elif synaptic_lr_rule == "divide_by_index":
-                    MUS = np.max([gamma_start/(i_sample + 1), gamma_stop])
+                    MU_MH = np.max([gammaM_start[0]/(i_sample + 1), gammaM_stop[0]])
+                    MU_MY = np.max([gammaM_start[1]/(i_sample + 1), gammaM_stop[1]])
+                    MU_WHX = np.max([gammaW_start[0]/(i_sample + 1), gammaW_stop[0]])
+                    MU_WYH= np.max([gammaW_start[1]/(i_sample + 1), gammaW_stop[1]])
 
                 W_HX, W_YH, M_H, M_Y, D1, D2 = self.update_weights_jit(x_current, h, y, zeta, beta, W_HX, W_YH, M_H, M_Y, 
-                                                                       D1, D2, MUS, muD, LayerMinimumGains, LayerMaximumGains, clip_gain_gradients )
-
+                                                                       D1, D2, MU_MH, MU_MY, MU_WHX, MU_WYH, muD, 
+                                                                       LayerMinimumGains, LayerMaximumGains, clip_gain_gradients )
                 Y[:,idx[i_sample]] = y
                 H[:,idx[i_sample]] = h
 
@@ -1228,7 +1175,7 @@ class OnlineWSMBSS:
                             W = self.compute_overall_mapping_jit(beta, zeta, D1, D2, M_H, M_Y, W_HX, W_YH)
                             self.W = W
                             
-                            SINR_current, SNR_current, SGG, Y_, P = self.evaluate_for_debug(W, A, Szeromean, X, mean_normalize_estimation = True)
+                            SINR_current, SNR_current, SGG, Y_, P = self.evaluate_for_debug(W, A, S, X, False)
 
                             self.SV_list.append(abs(SGG))
 
@@ -1268,9 +1215,10 @@ class OnlineWSMBSS:
 
     def fit_batch_sparse(self, X, n_epochs = 5, neural_dynamic_iterations = 750, neural_lr_start = 0.2, neural_lr_stop = 0.05, stlambd_lr = 1,
                          synaptic_lr_rule = "divide_by_log_index", neural_loop_lr_rule = "divide_by_slow_loop_index", 
-                         hidden_layer_gain = 10, mixtures_power_normalized = False, shuffle = True, debug_iteration_point = 1000, plot_in_jupyter = False):
+                         synaptic_lr_decay_divider = 5000, neural_lr_decay_multiplier = 0.005,
+                         hidden_layer_gain = 10, clip_gain_gradients = False, mixtures_power_normalized = False, shuffle = True, debug_iteration_point = 1000, plot_in_jupyter = False):
 
-        gamma_start, gamma_stop, beta, zeta, muD, W_HX, W_YH, M_H, M_Y, D1, D2 = self.gamma_start, self.gamma_stop, self.beta, self.zeta, np.array(self.muD), self.W_HX, self.W_YH, self.M_H, self.M_Y, self.D1, self.D2
+        gammaM_start, gammaM_stop, gammaW_start, gammaW_stop, beta, zeta, muD, W_HX, W_YH, M_H, M_Y, D1, D2 = self.gammaM_start, self.gammaM_stop, self.gammaW_start, self.gammaW_stop, self.beta, self.zeta, np.array(self.muD), self.W_HX, self.W_YH, self.M_H, self.M_Y, self.D1, self.D2
         LayerMinimumGains = self.LayerMinimumGains
         LayerMaximumGains = self.LayerMaximumGains
         debugging = self.set_ground_truth
@@ -1319,18 +1267,31 @@ class OnlineWSMBSS:
                                                              D1 = D1, D2 = D2, beta = beta, zeta = zeta, 
                                                              neural_dynamic_iterations = neural_dynamic_iterations, 
                                                              lr_start = neural_lr_start, lr_stop = neural_lr_stop,
-                                                             lr_rule = neural_loop_lr_rule, stlambd_lr = stlambd_lr,
-                                                             hidden_layer_gain = hidden_layer_gain, OUTPUT_COMP_TOL = neural_OUTPUT_COMP_TOL)
+                                                             lr_rule = neural_loop_lr_rule, 
+                                                             lr_decay_multiplier = neural_lr_decay_multiplier, stlambd_lr = stlambd_lr,
+                                                             hidden_layer_gain = hidden_layer_gain, mixtures_power_normalized = mixtures_power_normalized,
+                                                             OUTPUT_COMP_TOL = neural_OUTPUT_COMP_TOL)
 
                 if synaptic_lr_rule == "constant":
-                    MUS = gamma_start
+                    MU_MH = gammaM_start[0]
+                    MU_MY = gammaM_start[1]
+                    MU_WHX = gammaW_start[0]
+                    MU_WYH = gammaW_start[1]
                 elif synaptic_lr_rule == "divide_by_log_index":
-                    MUS = np.max([gamma_start/(1 + np.log(2 + i_sample)), gamma_stop])
+                    # MUS = np.max([gamma_start/(1 + np.log(2 + (i_sample))), gamma_stop])
+                    MU_MH = np.max([gammaM_start[0]/(1 + np.log(2 + (i_sample//synaptic_lr_decay_divider))), gammaM_stop[0]])
+                    MU_MY = np.max([gammaM_start[1]/(1 + np.log(2 + (i_sample//synaptic_lr_decay_divider))), gammaM_stop[1]])
+                    MU_WHX = np.max([gammaW_start[0]/(1 + np.log(2 + (i_sample//synaptic_lr_decay_divider))), gammaW_stop[0]])
+                    MU_WYH = np.max([gammaW_start[1]/(1 + np.log(2 + (i_sample//synaptic_lr_decay_divider))), gammaW_stop[1]])
                 elif synaptic_lr_rule == "divide_by_index":
-                    MUS = np.max([gamma_start/(i_sample + 1), gamma_stop])
+                    MU_MH = np.max([gammaM_start[0]/(i_sample + 1), gammaM_stop[0]])
+                    MU_MY = np.max([gammaM_start[1]/(i_sample + 1), gammaM_stop[1]])
+                    MU_WHX = np.max([gammaW_start[0]/(i_sample + 1), gammaW_stop[0]])
+                    MU_WYH= np.max([gammaW_start[1]/(i_sample + 1), gammaW_stop[1]])
 
                 W_HX, W_YH, M_H, M_Y, D1, D2 = self.update_weights_jit(x_current, h, y, zeta, beta, W_HX, W_YH, M_H, M_Y, 
-                                                                       D1, D2, MUS, muD, LayerMinimumGains, LayerMaximumGains )
+                                                                       D1, D2, MU_MH, MU_MY, MU_WHX, MU_WYH, muD, 
+                                                                       LayerMinimumGains, LayerMaximumGains, clip_gain_gradients )
 
                 Y[:,idx[i_sample]] = y
                 H[:,idx[i_sample]] = h
@@ -1381,9 +1342,10 @@ class OnlineWSMBSS:
 
     def fit_batch_nnsparse(self, X, n_epochs = 5, neural_dynamic_iterations = 750, neural_lr_start = 0.2, neural_lr_stop = 0.05, stlambd_lr = 0.2,
                            synaptic_lr_rule = "divide_by_log_index", neural_loop_lr_rule = "divide_by_slow_loop_index", 
-                           hidden_layer_gain = 10, shuffle = True, debug_iteration_point = 1000, plot_in_jupyter = False):
+                           synaptic_lr_decay_divider = 5000, neural_lr_decay_multiplier = 0.005,
+                           hidden_layer_gain = 10, clip_gain_gradients = False, shuffle = True, debug_iteration_point = 1000, plot_in_jupyter = False):
 
-        gamma_start, gamma_stop, beta, zeta, muD, W_HX, W_YH, M_H, M_Y, D1, D2 = self.gamma_start, self.gamma_stop, self.beta, self.zeta, np.array(self.muD), self.W_HX, self.W_YH, self.M_H, self.M_Y, self.D1, self.D2
+        gammaM_start, gammaM_stop, gammaW_start, gammaW_stop, beta, zeta, muD, W_HX, W_YH, M_H, M_Y, D1, D2 = self.gammaM_start, self.gammaM_stop, self.gammaW_start, self.gammaW_stop, self.beta, self.zeta, np.array(self.muD), self.W_HX, self.W_YH, self.M_H, self.M_Y, self.D1, self.D2
         LayerMinimumGains = self.LayerMinimumGains
         LayerMaximumGains = self.LayerMaximumGains
         debugging = self.set_ground_truth
@@ -1433,18 +1395,30 @@ class OnlineWSMBSS:
                                                                D1 = D1, D2 = D2, beta = beta, zeta = zeta, 
                                                                neural_dynamic_iterations = neural_dynamic_iterations, 
                                                                lr_start = neural_lr_start, lr_stop = neural_lr_stop,
-                                                               lr_rule = neural_loop_lr_rule, stlambd_lr = stlambd_lr,
-                                                               hidden_layer_gain = hidden_layer_gain, OUTPUT_COMP_TOL = neural_OUTPUT_COMP_TOL)
+                                                               lr_rule = neural_loop_lr_rule, lr_decay_multiplier = neural_lr_decay_multiplier,
+                                                               stlambd_lr = stlambd_lr, hidden_layer_gain = hidden_layer_gain, 
+                                                               OUTPUT_COMP_TOL = neural_OUTPUT_COMP_TOL)
 
                 if synaptic_lr_rule == "constant":
-                    MUS = gamma_start
+                    MU_MH = gammaM_start[0]
+                    MU_MY = gammaM_start[1]
+                    MU_WHX = gammaW_start[0]
+                    MU_WYH = gammaW_start[1]
                 elif synaptic_lr_rule == "divide_by_log_index":
-                    MUS = np.max([gamma_start/(1 + np.log(2 + i_sample)), gamma_stop])
+                    # MUS = np.max([gamma_start/(1 + np.log(2 + (i_sample))), gamma_stop])
+                    MU_MH = np.max([gammaM_start[0]/(1 + np.log(2 + (i_sample//synaptic_lr_decay_divider))), gammaM_stop[0]])
+                    MU_MY = np.max([gammaM_start[1]/(1 + np.log(2 + (i_sample//synaptic_lr_decay_divider))), gammaM_stop[1]])
+                    MU_WHX = np.max([gammaW_start[0]/(1 + np.log(2 + (i_sample//synaptic_lr_decay_divider))), gammaW_stop[0]])
+                    MU_WYH = np.max([gammaW_start[1]/(1 + np.log(2 + (i_sample//synaptic_lr_decay_divider))), gammaW_stop[1]])
                 elif synaptic_lr_rule == "divide_by_index":
-                    MUS = np.max([gamma_start/(i_sample + 1), gamma_stop])
+                    MU_MH = np.max([gammaM_start[0]/(i_sample + 1), gammaM_stop[0]])
+                    MU_MY = np.max([gammaM_start[1]/(i_sample + 1), gammaM_stop[1]])
+                    MU_WHX = np.max([gammaW_start[0]/(i_sample + 1), gammaW_stop[0]])
+                    MU_WYH= np.max([gammaW_start[1]/(i_sample + 1), gammaW_stop[1]])
 
                 W_HX, W_YH, M_H, M_Y, D1, D2 = self.update_weights_jit(x_current, h, y, zeta, beta, W_HX, W_YH, M_H, M_Y, 
-                                                                       D1, D2, MUS, muD, LayerMinimumGains, LayerMaximumGains )
+                                                                       D1, D2, MU_MH, MU_MY, MU_WHX, MU_WYH, muD, 
+                                                                       LayerMinimumGains, LayerMaximumGains, clip_gain_gradients )
 
                 Y[:,idx[i_sample]] = y
                 H[:,idx[i_sample]] = h
@@ -1495,7 +1469,8 @@ class OnlineWSMBSS:
 
     def fit_batch_simplex(self, X, n_epochs = 5, neural_dynamic_iterations = 750, neural_lr_start = 0.2, neural_lr_stop = 0.05,  stlambd_lr = 0.05,
                           synaptic_lr_rule = "divide_by_log_index", neural_loop_lr_rule = "divide_by_slow_loop_index", 
-                          hidden_layer_gain = 2, shuffle = True, debug_iteration_point = 1000, plot_in_jupyter = False):
+                          synaptic_lr_decay_divider = 5000, neural_lr_decay_multiplier = 0.005,
+                          hidden_layer_gain = 25, clip_gain_gradients = False, shuffle = True, debug_iteration_point = 1000, plot_in_jupyter = False):
         """_summary_
 
         Args:
@@ -1508,7 +1483,7 @@ class OnlineWSMBSS:
             debug_iteration_point (int, optional): _description_. Defaults to 1000.
             plot_in_jupyter (bool, optional): _description_. Defaults to False.
         """
-        gamma_start, gamma_stop, beta, zeta, muD, W_HX, W_YH, M_H, M_Y, D1, D2 = self.gamma_start, self.gamma_stop, self.beta, self.zeta, np.array(self.muD), self.W_HX, self.W_YH, self.M_H, self.M_Y, self.D1, self.D2
+        gammaM_start, gammaM_stop, gammaW_start, gammaW_stop, beta, zeta, muD, W_HX, W_YH, M_H, M_Y, D1, D2 = self.gammaM_start, self.gammaM_stop, self.gammaW_start, self.gammaW_stop, self.beta, self.zeta, np.array(self.muD), self.W_HX, self.W_YH, self.M_H, self.M_Y, self.D1, self.D2
         LayerMinimumGains = self.LayerMinimumGains
         LayerMaximumGains = self.LayerMaximumGains
         debugging = self.set_ground_truth
@@ -1531,8 +1506,8 @@ class OnlineWSMBSS:
             SIR_list = self.SIR_list
             SNR_list = self.SNR_list
             S = self.S
-            Szeromean = S - S.mean(axis = 1).reshape(-1,1)
-            A = self.A 
+            A = self.A
+            Szeromean = S - S.mean(axis = 1).reshape(-1,1) 
             plt.figure(figsize = (70, 50), dpi = 80)
 
         for k in range(n_epochs):
@@ -1558,18 +1533,29 @@ class OnlineWSMBSS:
                                                                 D1 = D1, D2 = D2, beta = beta, zeta = zeta, 
                                                                 neural_dynamic_iterations = neural_dynamic_iterations, 
                                                                 lr_start = neural_lr_start, lr_stop = neural_lr_stop, 
-                                                                lr_rule = neural_loop_lr_rule, stlambd_lr =stlambd_lr,
-                                                                hidden_layer_gain = hidden_layer_gain, OUTPUT_COMP_TOL = neural_OUTPUT_COMP_TOL)
+                                                                lr_rule = neural_loop_lr_rule, lr_decay_multiplier = neural_lr_decay_multiplier,
+                                                                stlambd_lr = stlambd_lr, hidden_layer_gain = hidden_layer_gain, 
+                                                                OUTPUT_COMP_TOL = neural_OUTPUT_COMP_TOL)
                 if synaptic_lr_rule == "constant":
-                    MUS = gamma_start
+                    MU_MH = gammaM_start[0]
+                    MU_MY = gammaM_start[1]
+                    MU_WHX = gammaW_start[0]
+                    MU_WYH = gammaW_start[1]
                 elif synaptic_lr_rule == "divide_by_log_index":
-                    MUS = np.max([gamma_start/(1 + np.log(2 + i_sample)), gamma_stop])
+                    # MUS = np.max([gamma_start/(1 + np.log(2 + (i_sample))), gamma_stop])
+                    MU_MH = np.max([gammaM_start[0]/(1 + np.log(2 + (i_sample//synaptic_lr_decay_divider))), gammaM_stop[0]])
+                    MU_MY = np.max([gammaM_start[1]/(1 + np.log(2 + (i_sample//synaptic_lr_decay_divider))), gammaM_stop[1]])
+                    MU_WHX = np.max([gammaW_start[0]/(1 + np.log(2 + (i_sample//synaptic_lr_decay_divider))), gammaW_stop[0]])
+                    MU_WYH = np.max([gammaW_start[1]/(1 + np.log(2 + (i_sample//synaptic_lr_decay_divider))), gammaW_stop[1]])
                 elif synaptic_lr_rule == "divide_by_index":
-                    MUS = np.max([gamma_start/(i_sample + 1), gamma_stop])
+                    MU_MH = np.max([gammaM_start[0]/(i_sample + 1), gammaM_stop[0]])
+                    MU_MY = np.max([gammaM_start[1]/(i_sample + 1), gammaM_stop[1]])
+                    MU_WHX = np.max([gammaW_start[0]/(i_sample + 1), gammaW_stop[0]])
+                    MU_WYH= np.max([gammaW_start[1]/(i_sample + 1), gammaW_stop[1]])
 
-                # MUS = np.max([gamma_start/(1 + np.log(2 + i_sample)), gamma_stop])
                 W_HX, W_YH, M_H, M_Y, D1, D2 = self.update_weights_jit(x_current, h, y, zeta, beta, W_HX, W_YH, M_H, M_Y, 
-                                                                       D1, D2, MUS, muD, LayerMinimumGains, LayerMaximumGains )
+                                                                       D1, D2, MU_MH, MU_MY, MU_WHX, MU_WYH, muD, 
+                                                                       LayerMinimumGains, LayerMaximumGains, clip_gain_gradients )
 
                 Y[:,idx[i_sample]] = y
                 H[:,idx[i_sample]] = h
@@ -1621,9 +1607,11 @@ class OnlineWSMBSS:
     def fit_batch_general_polytope(self, X, signed_dims, nn_dims, sparse_dims_list, n_epochs = 5, neural_dynamic_iterations = 750, 
                                    neural_lr_start = 0.2, neural_lr_stop = 0.05, stlambd_lr = 1,
                                    synaptic_lr_rule = "divide_by_log_index", neural_loop_lr_rule = "divide_by_slow_loop_index", 
-                                   hidden_layer_gain = 10, shuffle = True, debug_iteration_point = 1000, plot_in_jupyter = False):
+                                   synaptic_lr_decay_divider = 5000, neural_lr_decay_multiplier = 0.005,
+                                   hidden_layer_gain = 10, clip_gain_gradients = False, shuffle = True, 
+                                   debug_iteration_point = 1000, plot_in_jupyter = False):
 
-        gamma_start, gamma_stop, beta, zeta, muD, W_HX, W_YH, M_H, M_Y, D1, D2 = self.gamma_start, self.gamma_stop, self.beta, self.zeta, np.array(self.muD), self.W_HX, self.W_YH, self.M_H, self.M_Y, self.D1, self.D2
+        gammaM_start, gammaM_stop, gammaW_start, gammaW_stop, beta, zeta, muD, W_HX, W_YH, M_H, M_Y, D1, D2 = self.gammaM_start, self.gammaM_stop, self.gammaW_start, self.gammaW_stop, self.beta, self.zeta, np.array(self.muD), self.W_HX, self.W_YH, self.M_H, self.M_Y, self.D1, self.D2
         LayerMinimumGains = self.LayerMinimumGains
         LayerMaximumGains = self.LayerMaximumGains
         debugging = self.set_ground_truth
@@ -1682,18 +1670,32 @@ class OnlineWSMBSS:
                                                                         D1 = D1, D2 = D2, beta = beta, zeta = zeta, 
                                                                         neural_dynamic_iterations = neural_dynamic_iterations, 
                                                                         lr_start = neural_lr_start, lr_stop = neural_lr_stop,
-                                                                        lr_rule = neural_loop_lr_rule, stlambd_lr = stlambd_lr,
-                                                                        hidden_layer_gain = hidden_layer_gain, OUTPUT_COMP_TOL = neural_OUTPUT_COMP_TOL)
+                                                                        lr_rule = neural_loop_lr_rule, 
+                                                                        lr_decay_multiplier = neural_lr_decay_multiplier,
+                                                                        stlambd_lr = stlambd_lr,
+                                                                        hidden_layer_gain = hidden_layer_gain, 
+                                                                        OUTPUT_COMP_TOL = neural_OUTPUT_COMP_TOL)
 
                 if synaptic_lr_rule == "constant":
-                    MUS = gamma_start
+                    MU_MH = gammaM_start[0]
+                    MU_MY = gammaM_start[1]
+                    MU_WHX = gammaW_start[0]
+                    MU_WYH = gammaW_start[1]
                 elif synaptic_lr_rule == "divide_by_log_index":
-                    MUS = np.max([gamma_start/(1 + np.log(2 + i_sample)), gamma_stop])
+                    # MUS = np.max([gamma_start/(1 + np.log(2 + (i_sample))), gamma_stop])
+                    MU_MH = np.max([gammaM_start[0]/(1 + np.log(2 + (i_sample//synaptic_lr_decay_divider))), gammaM_stop[0]])
+                    MU_MY = np.max([gammaM_start[1]/(1 + np.log(2 + (i_sample//synaptic_lr_decay_divider))), gammaM_stop[1]])
+                    MU_WHX = np.max([gammaW_start[0]/(1 + np.log(2 + (i_sample//synaptic_lr_decay_divider))), gammaW_stop[0]])
+                    MU_WYH = np.max([gammaW_start[1]/(1 + np.log(2 + (i_sample//synaptic_lr_decay_divider))), gammaW_stop[1]])
                 elif synaptic_lr_rule == "divide_by_index":
-                    MUS = np.max([gamma_start/(i_sample + 1), gamma_stop])
+                    MU_MH = np.max([gammaM_start[0]/(i_sample + 1), gammaM_stop[0]])
+                    MU_MY = np.max([gammaM_start[1]/(i_sample + 1), gammaM_stop[1]])
+                    MU_WHX = np.max([gammaW_start[0]/(i_sample + 1), gammaW_stop[0]])
+                    MU_WYH= np.max([gammaW_start[1]/(i_sample + 1), gammaW_stop[1]])
 
                 W_HX, W_YH, M_H, M_Y, D1, D2 = self.update_weights_jit(x_current, h, y, zeta, beta, W_HX, W_YH, M_H, M_Y, 
-                                                                       D1, D2, MUS, muD, LayerMinimumGains, LayerMaximumGains )
+                                                                       D1, D2, MU_MH, MU_MY, MU_WHX, MU_WYH, muD, 
+                                                                       LayerMinimumGains, LayerMaximumGains, clip_gain_gradients )
 
                 Y[:,idx[i_sample]] = y
                 H[:,idx[i_sample]] = h
@@ -1742,9 +1744,100 @@ class OnlineWSMBSS:
         self.SIR_list = SIR_list
         self.SNR_list = SNR_list
 
+
+class OnlineWSMICA(OnlineWSMBSS):
+
+    @staticmethod
+    @njit
+    def run_neural_dynamics_ica_jit(x_current, h, y, M_H, M_Y, W_HX, W_YH, D1, D2, beta, zeta, 
+                                    neural_dynamic_iterations, lr_start, lr_stop, 
+                                    lr_rule, hidden_layer_gain = 20, output_activation = "tanh",
+                                    OUTPUT_COMP_TOL = 1e-7):
+        """_summary_
+
+        Args:
+            x_current (_type_): _description_
+            h (_type_): _description_
+            y (_type_): _description_
+            M_H (_type_): _description_
+            M_Y (_type_): _description_
+            W_HX (_type_): _description_
+            W_YH (_type_): _description_
+            D1 (_type_): _description_
+            D2 (_type_): _description_
+            beta (_type_): _description_
+            zeta (_type_): _description_
+            neural_dynamic_iterations (_type_): _description_
+            lr_start (_type_): _description_
+            lr_stop (_type_): _description_
+            OUTPUT_COMP_TOL (_type_): _description_
+        """
+        def offdiag(A, return_diag = False):
+            """_summary_
+
+            Args:
+                A (_type_): _description_
+                return_diag (bool, optional): _description_. Defaults to False.
+
+            Returns:
+                _type_: _description_
+            """
+            if return_diag:
+                diag = np.diag(A)
+                return A - np.diag(diag), diag
+            else:
+                return A - np.diag(diag)
+        
+        M_hat_H, Gamma_H = offdiag(M_H, True)
+        M_hat_Y, Gamma_Y = offdiag(M_Y, True)
+        
+        mat_factor1 = (1 - zeta) * beta * (D1 * W_HX)
+        mat_factor2 = ((1 - zeta) * (1 - beta) * M_hat_H  + (1- zeta) * beta * ((D1 * M_hat_H) * D1.T))
+        mat_factor3 = (1 - zeta) * (1 - beta) * (W_YH.T * D2.T)
+        mat_factor4 = (1 - zeta) * Gamma_H * ((1 - beta) + beta * (D1.T) ** 2)
+        mat_factor5 = M_hat_Y * D2.T
+        mat_factor6 = Gamma_Y * D2.T
+        
+        v = mat_factor4[0] * h
+        u = mat_factor6[0] * y
+        
+        PreviousMembraneVoltages = {'v': np.zeros_like(v), 'u': np.zeros_like(u)}
+        MembraneVoltageNotSettled = 1
+        OutputCounter = 0
+        while MembraneVoltageNotSettled & (OutputCounter < neural_dynamic_iterations):
+            OutputCounter += 1
+            if lr_rule == "constant":
+                MUV = lr_start
+            elif lr_rule == "divide_by_loop_index":
+                MUV = max(lr_start/(1+OutputCounter), lr_stop)
+            elif lr_rule == "divide_by_slow_loop_index":
+                MUV = max(lr_start/(1+OutputCounter*0.05), lr_stop)
+
+            delv = -v + mat_factor1 @ x_current - mat_factor2 @ h + mat_factor3 @ y
+            v = v + MUV * delv
+            h = v / mat_factor4[0]
+            h = np.clip(h, -hidden_layer_gain, hidden_layer_gain)
+            delu = -u + W_YH @ h - mat_factor5 @ y
+            u = u + MUV * delu
+            y = u / mat_factor6[0]
+            if output_activation == "tanh":
+                y = np.tanh(y)
+            elif output_activation == "linear":
+                y = y
+
+            MembraneVoltageNotSettled = 0
+            if (np.linalg.norm(v - PreviousMembraneVoltages['v'])/np.linalg.norm(v) > OUTPUT_COMP_TOL) | (np.linalg.norm(u - PreviousMembraneVoltages['u'])/np.linalg.norm(u) > OUTPUT_COMP_TOL):
+                MembraneVoltageNotSettled = 1
+            PreviousMembraneVoltages['v'] = v
+            PreviousMembraneVoltages['u'] = u
+
+        return h,y, OutputCounter
+
+
     def fit_batch_ica(self, X, n_epochs = 5, neural_dynamic_iterations = 750, neural_lr_start = 0.2, neural_lr_stop = 0.05, 
                       synaptic_lr_rule = "divide_by_log_index", neural_loop_lr_rule = "divide_by_slow_loop_index", 
-                      hidden_layer_gain = 2, shuffle = True, debug_iteration_point = 1000, plot_in_jupyter = False):
+                      hidden_layer_gain = 2, clip_gain_gradients = True, output_activation = "tanh", 
+                      shuffle = True, debug_iteration_point = 1000, plot_in_jupyter = False):
         """_summary_
 
         Args:
@@ -1757,7 +1850,7 @@ class OnlineWSMBSS:
             debug_iteration_point (int, optional): _description_. Defaults to 1000.
             plot_in_jupyter (bool, optional): _description_. Defaults to False.
         """
-        gamma_start, gamma_stop, beta, zeta, muD, W_HX, W_YH, M_H, M_Y, D1, D2 = self.gamma_start, self.gamma_stop, self.beta, self.zeta, np.array(self.muD), self.W_HX, self.W_YH, self.M_H, self.M_Y, self.D1, self.D2
+        gammaM_start, gammaM_stop, gammaW_start, gammaW_stop, beta, zeta, muD, W_HX, W_YH, M_H, M_Y, D1, D2 = self.gammaM_start, self.gammaM_stop, self.gammaW_start, self.gammaW_stop, self.beta, self.zeta, np.array(self.muD), self.W_HX, self.W_YH, self.M_H, self.M_Y, self.D1, self.D2
         LayerMinimumGains = self.LayerMinimumGains
         LayerMaximumGains = self.LayerMaximumGains
         debugging = self.set_ground_truth
@@ -1781,6 +1874,7 @@ class OnlineWSMBSS:
             SNR_list = self.SNR_list
             S = self.S
             A = self.A 
+            Szeromean = S - S.mean(axis = 1).reshape(-1,1)
             plt.figure(figsize = (70, 50), dpi = 80)
 
         for k in range(n_epochs):
@@ -1807,17 +1901,28 @@ class OnlineWSMBSS:
                                                             neural_dynamic_iterations = neural_dynamic_iterations, 
                                                             lr_start = neural_lr_start, lr_stop = neural_lr_stop,
                                                             lr_rule = neural_loop_lr_rule, hidden_layer_gain = hidden_layer_gain,
-                                                            OUTPUT_COMP_TOL = neural_OUTPUT_COMP_TOL)
+                                                            output_activation = output_activation, OUTPUT_COMP_TOL = neural_OUTPUT_COMP_TOL)
 
                 if synaptic_lr_rule == "constant":
-                    MUS = gamma_start
+                    MU_MH = gammaM_start[0]
+                    MU_MY = gammaM_start[1]
+                    MU_WHX = gammaW_start[0]
+                    MU_WYH = gammaW_start[1]
                 elif synaptic_lr_rule == "divide_by_log_index":
-                    MUS = np.max([gamma_start/(1 + np.log(2 + i_sample)), gamma_stop])
+                    # MUS = np.max([gamma_start/(1 + np.log(2 + (i_sample))), gamma_stop])
+                    MU_MH = np.max([gammaM_start[0]/(1 + np.log(2 + (i_sample//5000))), gammaM_stop[0]])
+                    MU_MY = np.max([gammaM_start[1]/(1 + np.log(2 + (i_sample//5000))), gammaM_stop[1]])
+                    MU_WHX = np.max([gammaW_start[0]/(1 + np.log(2 + (i_sample//5000))), gammaW_stop[0]])
+                    MU_WYH = np.max([gammaW_start[1]/(1 + np.log(2 + (i_sample//5000))), gammaW_stop[1]])
                 elif synaptic_lr_rule == "divide_by_index":
-                    MUS = np.max([gamma_start/(i_sample + 1), gamma_stop])
+                    MU_MH = np.max([gammaM_start[0]/(i_sample + 1), gammaM_stop[0]])
+                    MU_MY = np.max([gammaM_start[1]/(i_sample + 1), gammaM_stop[1]])
+                    MU_WHX = np.max([gammaW_start[0]/(i_sample + 1), gammaW_stop[0]])
+                    MU_WYH= np.max([gammaW_start[1]/(i_sample + 1), gammaW_stop[1]])
 
                 W_HX, W_YH, M_H, M_Y, D1, D2 = self.update_weights_jit(x_current, h, y, zeta, beta, W_HX, W_YH, M_H, M_Y, 
-                                                                       D1, D2, MUS, muD, LayerMinimumGains, LayerMaximumGains )
+                                                                       D1, D2, MU_MH, MU_MY, MU_WHX, MU_WYH, muD, 
+                                                                       LayerMinimumGains, LayerMaximumGains, clip_gain_gradients )
 
                 Y[:,idx[i_sample]] = y
                 H[:,idx[i_sample]] = h
@@ -1827,89 +1932,19 @@ class OnlineWSMBSS:
                         try:
                             W = self.compute_overall_mapping_jit(beta, zeta, D1, D2, M_H, M_Y, W_HX, W_YH)
                             self.W = W
-
-                            T = W @ A
-                            Tabs = np.abs(T)
-                            P = np.zeros((s_dim, s_dim))
-
-                            for SourceIndex in range(s_dim):
-                                Tmax = np.max(Tabs[SourceIndex,:])
-                                Tabs[SourceIndex,:] = Tabs[SourceIndex,:]/Tmax
-                                P[SourceIndex,:] = Tabs[SourceIndex,:]>0.999
                             
-                            GG = P.T @ T
-                            _, SGG, _ = np.linalg.svd(GG)
+                            SINR_current, SNR_current, SGG, Y_, P = self.evaluate_for_debug(W, A, Szeromean, X, mean_normalize_estimation = True)
+
                             self.SV_list.append(abs(SGG))
 
-                            Y_ = W @ X
-                            Y_ = self.signed_and_permutation_corrected_sources(S.T,Y_.T)
-                            coef_ = (Y_ * S.T).sum(axis = 0) / (Y_ * Y_).sum(axis = 0)
-                            Y_ = coef_ * Y_
-                            self.Y_ = Y_
+                            SNR_list.append(SNR_current)
+                            SIR_list.append(SINR_current)
 
-                            SNR_list.append(self.snr_jit(S.T,Y_))
-                            SIR_list.append(10*np.log10(self.CalculateSINRjit(Y_.T, S)[0]))
                             if plot_in_jupyter:
                                 D1list.append(D1.reshape(-1,))
                                 D2list.append(D2.reshape(-1,))
-
-                                pl.clf()
-                                pl.subplot(3,2,1)
-                                pl.plot(np.array(SIR_list), linewidth = 5)
-                                pl.xlabel("Number of Iterations / {}".format(debug_iteration_point), fontsize = 45)
-                                pl.ylabel("SIR (dB)", fontsize = 45)
-                                pl.title("SIR Behaviour", fontsize = 45)
-                                pl.grid()
-                                # pl.title("Neural Dynamic Iteration Number : {}".format(str(oc)), fontsize = 45)
-                                pl.xticks(fontsize=45)
-                                pl.yticks(fontsize=45)
-
-                                pl.subplot(3,2,2)
-                                pl.plot(np.array(D1list), linewidth = 5)
-                                # pl.plot(np.array(D1maxlist))
-                                pl.grid()
-                                # pl.legend(["D1min", "D1max"])
-                                pl.title("Diagonal Values of D1", fontsize = 45)
-                                pl.xlabel("Number of Iterations / {}".format(debug_iteration_point), fontsize = 45)
-                                pl.xticks(fontsize=45)
-                                pl.yticks(fontsize=45)
-
-                                pl.subplot(3,2,3)
-                                pl.plot(np.array(D2list), linewidth = 5)
-                                # pl.plot(np.array(D2maxlist))
-                                pl.grid()
-                                # pl.legend(["D2min","D2max"])
-                                pl.title("Diagonal Values of D2", fontsize = 45)
-                                pl.xlabel("Number of Iterations / {}".format(debug_iteration_point), fontsize = 45)
-                                pl.xticks(fontsize=45)
-                                pl.yticks(fontsize=45)
-
-                                pl.subplot(3,2,4)
-                                pl.plot(np.array(SNR_list), linewidth = 5)
-                                pl.grid()
-                                pl.title("Component SNR Check", fontsize = 45)
-                                pl.ylabel("SNR (dB)", fontsize = 45)
-                                pl.xlabel("Number of Iterations / {}".format(debug_iteration_point), fontsize = 45)
-                                pl.xticks(fontsize=45)
-                                pl.yticks(fontsize=45)
-
-                                pl.subplot(3,2,5)
-                                pl.plot(np.array(self.SV_list), linewidth = 5)
-                                pl.grid()
-                                pl.title("Singular Value Check, Overall Matrix Rank: "+str(np.linalg.matrix_rank(P)) , fontsize = 45)
-                                pl.xlabel("Number of Iterations / {}".format(debug_iteration_point), fontsize = 45)
-                                pl.xticks(fontsize=45)
-                                pl.yticks(fontsize=45)
-
-                                pl.subplot(3,2,6)
-                                pl.plot(Y[:,idx[i_sample-25:i_sample]].T, linewidth = 5)
-                                pl.title("Y last 25", fontsize = 45)
-                                pl.grid()
-                                pl.xticks(fontsize=45)
-                                pl.yticks(fontsize=45)
-
-                                clear_output(wait=True)
-                                display(pl.gcf())  
+                                YforPlot = Y[:,idx[i_sample-25:i_sample]].T
+                                self.plot_for_debug(SIR_list, SNR_list, D1list, D2list, P, debug_iteration_point, YforPlot)
 
                             self.W_HX = W_HX
                             self.W_YH = W_YH
@@ -1935,9 +1970,4 @@ class OnlineWSMBSS:
         self.Y = Y
         self.SIR_list = SIR_list
         self.SNR_list = SNR_list
-
-
-
-
-
 
