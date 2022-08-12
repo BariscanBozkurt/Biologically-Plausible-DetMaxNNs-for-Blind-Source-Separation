@@ -1,4 +1,5 @@
 ####### BLIND SOURCE SEPARATION UTILITY FUNCTIONS #############
+from tokenize import Number
 import numpy as np
 from scipy.stats import invgamma, chi2, t
 from scipy import linalg
@@ -113,6 +114,18 @@ def ProjectRowstoL1NormBall(H):
     H=np.sign(H)*(ww>0)*ww
     return H
 
+def ProjectColstoSimplex(v, z=1):
+    """v array of shape (n_features, n_samples)."""
+    p, n = v.shape
+    u = np.sort(v, axis=0)[::-1, ...]
+    pi = np.cumsum(u, axis=0) - z
+    ind = (np.arange(p) + 1).reshape(-1, 1)
+    mask = (u - pi / ind) > 0
+    rho = p - 1 - np.argmax(mask[::-1, ...], axis=0)
+    theta = pi[tuple([rho, np.arange(n)])] / (rho + 1)
+    w = np.maximum(v - theta, 0)
+    return w
+
 ########### SIGNAL TO INTERFERENCE-PLUS-NOISE RATIO FUNCTIONS ##################
 def CalculateSIR(H,pH, return_db = True):
     """_summary_
@@ -224,6 +237,11 @@ def generate_uniform_points_in_polytope(polytope_vertices, size):
     sample = np.random.choice(len(vols), size = size, p = vols / vols.sum())
 
     return np.einsum('ijk, ij -> ik', deln[sample], dirichlet.rvs([1]*(dims + 1), size = size)).T
+
+def generate_uniform_points_in_simplex(NumberofSources, NumberofSamples, gain = 1):
+    S = np.random.exponential(scale=1.0, size = (NumberofSources, NumberofSamples))
+    S = gain * (S / np.sum(S, axis = 0))
+    return S
 
 def WSM_Mixing_Scenario(S, NumberofMixtures = None, INPUT_STD = None):
     NumberofSources = S.shape[0]
