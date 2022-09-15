@@ -757,6 +757,7 @@ class OnlineWSMBSS(BSSBaseClass):
         lr_decay_multiplier=0.005,
         stlambd_lr=1,
         hidden_layer_gain=100,
+        neural_fast_start=False,
         mixtures_power_normalized=False,
         OUTPUT_COMP_TOL=1e-7,
     ):
@@ -782,6 +783,18 @@ class OnlineWSMBSS(BSSBaseClass):
             X_thresholded = (X_absolute > thresh) * (X_absolute - thresh) * X_sign
             return X_thresholded
 
+        if neural_fast_start:
+            # Mapping from xt -> ht
+            A = (1 - zeta) * (
+                beta * ((D1 * M_H) * D1.T)
+                + (1 - beta) * (M_H - W_YH.T @ np.linalg.solve(M_Y, W_YH))
+            )
+            b = (1 - zeta) * beta * (D1 * W_HX)
+            WL1 = np.linalg.solve(A, b)
+            # Mapping from ht -> yt
+            WL2 = np.linalg.solve(M_Y * D2.T, W_YH)
+            h = WL1 @ x_current
+            y = WL2 @ h
         M_hat_H, Gamma_H = offdiag(M_H, True)
         M_hat_Y, Gamma_Y = offdiag(M_Y, True)
 
@@ -862,6 +875,7 @@ class OnlineWSMBSS(BSSBaseClass):
         lr_decay_multiplier=0.005,
         stlambd_lr=0.2,
         hidden_layer_gain=100,
+        neural_fast_start = False,
         OUTPUT_COMP_TOL=1e-7,
     ):
         def offdiag(A, return_diag=False):
@@ -879,6 +893,18 @@ class OnlineWSMBSS(BSSBaseClass):
                 return A - np.diag(diag), diag
             else:
                 return A - np.diag(diag)
+        if neural_fast_start:
+            # Mapping from xt -> ht
+            A = (1 - zeta) * (
+                beta * ((D1 * M_H) * D1.T)
+                + (1 - beta) * (M_H - W_YH.T @ np.linalg.solve(M_Y, W_YH))
+            )
+            b = (1 - zeta) * beta * (D1 * W_HX)
+            WL1 = np.linalg.solve(A, b)
+            # Mapping from ht -> yt
+            WL2 = np.linalg.solve(M_Y * D2.T, W_YH)
+            h = WL1 @ x_current
+            y = WL2 @ h
 
         M_hat_H, Gamma_H = offdiag(M_H, True)
         M_hat_Y, Gamma_Y = offdiag(M_Y, True)
@@ -955,8 +981,9 @@ class OnlineWSMBSS(BSSBaseClass):
         lr_stop,
         lr_rule,
         lr_decay_multiplier=0.005,
+        STLAMBD=None,
         stlambd_lr=0.01,
-        hidden_layer_gain=25,
+        hidden_layer_gain=100,
         neural_fast_start = False,
         OUTPUT_COMP_TOL=1e-7,
     ):
@@ -1003,8 +1030,8 @@ class OnlineWSMBSS(BSSBaseClass):
 
         v = mat_factor4[0] * h
         u = mat_factor6[0] * y
-
-        STLAMBD = 0
+        if STLAMBD is None:
+            STLAMBD = 0
         PreviousMembraneVoltages = {"v": np.zeros_like(v), "u": np.zeros_like(u)}
         MembraneVoltageNotSettled = 1
         OutputCounter = 0
@@ -1042,7 +1069,7 @@ class OnlineWSMBSS(BSSBaseClass):
             PreviousMembraneVoltages["v"] = v
             PreviousMembraneVoltages["u"] = u
 
-        return h, y, OutputCounter
+        return h, y, STLAMBD, OutputCounter
 
     @staticmethod
     @njit
@@ -1838,6 +1865,7 @@ class OnlineWSMBSS(BSSBaseClass):
         stlambd_lr=1,
         synaptic_lr_rule="divide_by_log_index",
         neural_loop_lr_rule="divide_by_slow_loop_index",
+        neural_fast_start=False,
         synaptic_lr_decay_divider=5000,
         neural_lr_decay_multiplier=0.005,
         hidden_layer_gain=10,
@@ -1943,6 +1971,7 @@ class OnlineWSMBSS(BSSBaseClass):
                     lr_decay_multiplier=neural_lr_decay_multiplier,
                     stlambd_lr=stlambd_lr,
                     hidden_layer_gain=hidden_layer_gain,
+                    neural_fast_start=neural_fast_start,
                     mixtures_power_normalized=mixtures_power_normalized,
                     OUTPUT_COMP_TOL=neural_OUTPUT_COMP_TOL,
                 )
@@ -2093,6 +2122,7 @@ class OnlineWSMBSS(BSSBaseClass):
         stlambd_lr=0.2,
         synaptic_lr_rule="divide_by_log_index",
         neural_loop_lr_rule="divide_by_slow_loop_index",
+        neural_fast_start=False,
         synaptic_lr_decay_divider=5000,
         neural_lr_decay_multiplier=0.005,
         hidden_layer_gain=10,
@@ -2198,6 +2228,7 @@ class OnlineWSMBSS(BSSBaseClass):
                     lr_decay_multiplier=neural_lr_decay_multiplier,
                     stlambd_lr=stlambd_lr,
                     hidden_layer_gain=hidden_layer_gain,
+                    neural_fast_start=neural_fast_start,
                     OUTPUT_COMP_TOL=neural_OUTPUT_COMP_TOL,
                 )
 
@@ -2347,6 +2378,7 @@ class OnlineWSMBSS(BSSBaseClass):
         neural_lr_start=0.2,
         neural_lr_stop=0.05,
         stlambd_lr=0.05,
+        use_previous_stlambd=False,
         synaptic_lr_rule="divide_by_log_index",
         neural_loop_lr_rule="divide_by_slow_loop_index",
         neural_fast_start = False,
@@ -2403,6 +2435,7 @@ class OnlineWSMBSS(BSSBaseClass):
         )
         LayerMinimumGains = self.LayerMinimumGains
         LayerMaximumGains = self.LayerMaximumGains
+        STLAMBD=None
         debugging = self.set_ground_truth
 
         assert (
@@ -2447,28 +2480,31 @@ class OnlineWSMBSS(BSSBaseClass):
                 h = H[:, idx[i_sample]]
                 neural_OUTPUT_COMP_TOL = self.neural_OUTPUT_COMP_TOL
 
-                h, y, _ = self.run_neural_dynamics_simplex_jit(
-                    x_current=x_current,
-                    h=h,
-                    y=y,
-                    M_H=M_H,
-                    M_Y=M_Y,
-                    W_HX=W_HX,
-                    W_YH=W_YH,
-                    D1=D1,
-                    D2=D2,
-                    beta=beta,
-                    zeta=zeta,
-                    neural_dynamic_iterations=neural_dynamic_iterations,
-                    lr_start=neural_lr_start,
-                    lr_stop=neural_lr_stop,
-                    lr_rule=neural_loop_lr_rule,
-                    lr_decay_multiplier=neural_lr_decay_multiplier,
-                    stlambd_lr=stlambd_lr,
-                    hidden_layer_gain=hidden_layer_gain,
-                    neural_fast_start=neural_fast_start,
-                    OUTPUT_COMP_TOL=neural_OUTPUT_COMP_TOL,
-                )
+                h, y, STLAMBD_, _ = self.run_neural_dynamics_simplex_jit(
+                                                                        x_current=x_current,
+                                                                        h=h,
+                                                                        y=y,
+                                                                        M_H=M_H,
+                                                                        M_Y=M_Y,
+                                                                        W_HX=W_HX,
+                                                                        W_YH=W_YH,
+                                                                        D1=D1,
+                                                                        D2=D2,
+                                                                        beta=beta,
+                                                                        zeta=zeta,
+                                                                        neural_dynamic_iterations=neural_dynamic_iterations,
+                                                                        lr_start=neural_lr_start,
+                                                                        lr_stop=neural_lr_stop,
+                                                                        lr_rule=neural_loop_lr_rule,
+                                                                        lr_decay_multiplier=neural_lr_decay_multiplier,
+                                                                        STLAMBD=STLAMBD,
+                                                                        stlambd_lr=stlambd_lr,
+                                                                        hidden_layer_gain=hidden_layer_gain,
+                                                                        neural_fast_start=neural_fast_start,
+                                                                        OUTPUT_COMP_TOL=neural_OUTPUT_COMP_TOL,
+                                                                    )
+                if use_previous_stlambd:
+                    STLAMBD = STLAMBD_
                 if synaptic_lr_rule == "constant":
                     MU_MH = gammaM_start[0]
                     MU_MY = gammaM_start[1]

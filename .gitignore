@@ -1,9 +1,13 @@
 *.log
 *.sh
 *.pkl
+*.mat
+*.out
 sounds
 SoundData
 Antisparse_Music_Separation.ipynb
 WSMBSSveryOld.py
 SoundSeparation
-AblationStudies
+AblationStudies_
+CodeSpeedupTrial
+SoundSeparation
