@@ -60,8 +60,7 @@ for iter1 in range(NumAverages): ## Loop over number of averages
         S = generate_correlated_copula_sources(rho = rho, df = 4, n_sources = NumberofSources, 
                                                size_sources = N , decreasing_correlation = True) ## GENERATE CORRELATED COPULA
         S = 2 * S - 1
-        A = np.random.randn(NumberofMixtures,NumberofSources)
-        X = np.dot(A,S)
+        A, X = WSM_Mixing_Scenario(S, NumberofMixtures, INPUT_STD = 0.5)
         Xnoisy, NoisePart = addWGN(X, SNRlevel, return_noise = True) ## Add White Gaussian Noise with 30 dB SNR
         SNRinplevel = 10 * np.log10(np.sum(np.mean((Xnoisy - NoisePart) ** 2, axis = 1)) / np.sum(np.mean(NoisePart ** 2, axis = 1)))
 
@@ -69,7 +68,6 @@ for iter1 in range(NumAverages): ## Loop over number of averages
         #                   WSM                               #
         #######################################################
         try:
-            WSM_INPUT_STD = 0.5
             if rho > 0.4:
                 gamma_start = 0.25
                 gamma_stop = 5 * 1e-4
@@ -124,10 +122,9 @@ for iter1 in range(NumAverages): ## Loop over number of averages
                                     A=A,
                                 )
 
-            XnoisyWSM = (WSM_INPUT_STD * (Xnoisy / Xnoisy.std(1)[:,np.newaxis]))
             with Timer() as t:
                 modelWSM.fit_batch_antisparse(
-                                                XnoisyWSM,
+                                                Xnoisy,
                                                 n_epochs=1,
                                                 neural_lr_start=0.75,
                                                 neural_lr_stop=0.05,
@@ -139,7 +136,7 @@ for iter1 in range(NumAverages): ## Loop over number of averages
             ######### Evaluate the Performance of Online WSM Framework ###########################
             SINRlistWSM = modelWSM.SIR_list
             WfWSM = modelWSM.compute_overall_mapping(return_mapping = True)
-            YWSM = WfWSM @ XnoisyWSM
+            YWSM = WfWSM @ Xnoisy
             SINRWSM, SNRWSM, _, _, _ = evaluate_bss(WfWSM, YWSM, A, S, mean_normalize_estimations = False)
 
             WSM_Dict = {'rho' : rho, 'trial' : trial, 'seed' : seed_, 'Model' : 'WSM',

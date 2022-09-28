@@ -67,8 +67,7 @@ for iter1 in range(NumAverages): ## Loop over number of averages
 
         # Szeromean = S - S.mean(axis = 1).reshape(-1,1)
         
-        A = np.random.standard_normal(size=(NumberofMixtures, NumberofSources))
-        X = np.dot(A,S)
+        A, X = WSM_Mixing_Scenario(S, NumberofMixtures, INPUT_STD = 0.5)
 
         Xnoisy, NoisePart = addWGN(X, SNRlevel, return_noise = True)
 
@@ -79,7 +78,6 @@ for iter1 in range(NumAverages): ## Loop over number of averages
         #######################################################
         try: # Try Except for SVD did not converge error (or for any other error)
             MUS = 0.25
-            WSM_INPUT_STD = 0.5
             gammaM_start = [MUS, MUS]
             gammaM_stop = [1e-3, 1e-3]
             gammaW_start = [MUS, MUS]
@@ -122,10 +120,10 @@ for iter1 in range(NumAverages): ## Loop over number of averages
                                     S=S,
                                     A=A,
                                 )
-            XnoisyWSM = (WSM_INPUT_STD * (Xnoisy / Xnoisy.std(1)[:,np.newaxis]))
+
             with Timer() as t:
                 modelWSM.fit_batch_nnsparse(
-                                            XnoisyWSM,
+                                            Xnoisy,
                                             n_epochs=1,
                                             neural_lr_start=0.5,
                                             neural_lr_stop=0.2,
@@ -136,7 +134,7 @@ for iter1 in range(NumAverages): ## Loop over number of averages
             ######### Evaluate the Performance of WSM Framework ###########################
             SINRlistWSM = modelWSM.SIR_list
             WfWSM = modelWSM.compute_overall_mapping(return_mapping = True)
-            YWSM = WfWSM @ XnoisyWSM
+            YWSM = WfWSM @ Xnoisy
             SINRWSM, SNRWSM, _, _, _ = evaluate_bss(WfWSM, YWSM, A, S, mean_normalize_estimations = False)
             
             WSM_Dict = {'SNRlevel' : SNRlevel, 'trial' : trial, 'seed' : seed_, 'Model' : 'WSM',
@@ -186,40 +184,40 @@ for iter1 in range(NumAverages): ## Loop over number of averages
                          'S' : None, 'A' : None, 'X': None, 'Wf' : None, 'SNRinp' : None, 
                          'execution_time' : None}
 
-        #######################################################
-        #                 PMF BATCH                           #
-        #######################################################
-        try:
-            modelPMF = PMFv2(s_dim = s_dim, y_dim = x_dim,
-                             set_ground_truth = True, Sgt = S[:,:10000], Agt = A)
-            with Timer() as t:
-                modelPMF.fit_batch_nnsparse(
-                                            Xnoisy[:,:10000],
-                                            n_iterations=100000,
-                                            step_size_scale=100,
-                                            debug_iteration_point=debug_iteration_point,
-                                            plot_in_jupyter=False,
-                                           )
-            ######### Evaluate the Performance of PMF Framework ###########################
-            SINRlistPMF = modelPMF.SIR_list 
-            WfPMF = modelPMF.W
-            # YPMF = modelPMF.S
-            YPMF = WfPMF @ Xnoisy
-            SINRPMF, SNRPMF, _, _, _ = evaluate_bss(WfPMF, YPMF, A, S, mean_normalize_estimations = False)
+        # #######################################################
+        # #                 PMF BATCH                           #
+        # #######################################################
+        # try:
+        #     modelPMF = PMFv2(s_dim = s_dim, y_dim = x_dim,
+        #                      set_ground_truth = True, Sgt = S[:,:10000], Agt = A)
+        #     with Timer() as t:
+        #         modelPMF.fit_batch_nnsparse(
+        #                                     Xnoisy[:,:10000],
+        #                                     n_iterations=100000,
+        #                                     step_size_scale=100,
+        #                                     debug_iteration_point=debug_iteration_point,
+        #                                     plot_in_jupyter=False,
+        #                                    )
+        #     ######### Evaluate the Performance of PMF Framework ###########################
+        #     SINRlistPMF = modelPMF.SIR_list 
+        #     WfPMF = modelPMF.W
+        #     # YPMF = modelPMF.S
+        #     YPMF = WfPMF @ Xnoisy
+        #     SINRPMF, SNRPMF, _, _, _ = evaluate_bss(WfPMF, YPMF, A, S, mean_normalize_estimations = False)
             
-            PMF_Dict = { 'SNRlevel' : SNRlevel, 'trial' : trial, 'seed' : seed_, 'Model' : 'PMF',
-                         'SINR' : SINRPMF, 'SINRlist':  SINRlistPMF, 'SNR' : SNRPMF,
-                         'S' : None, 'A' : None, 'X': None, 'Wf' : WfPMF, 'SNRinp' : None, 
-                         'execution_time' : t.interval}
-        except Exception as e:
-            PMF_Dict = { 'SNRlevel' : SNRlevel, 'trial' : trial, 'seed' : seed_, 'Model' : 'PMF',
-                         'SINR' : -999, 'SINRlist':  str(e), 'SNR' : None,
-                         'S' : None, 'A' : None, 'X': None, 'Wf' : None, 'SNRinp' : None, 
-                         'execution_time' : t.interval}
+        #     PMF_Dict = { 'SNRlevel' : SNRlevel, 'trial' : trial, 'seed' : seed_, 'Model' : 'PMF',
+        #                  'SINR' : SINRPMF, 'SINRlist':  SINRlistPMF, 'SNR' : SNRPMF,
+        #                  'S' : None, 'A' : None, 'X': None, 'Wf' : WfPMF, 'SNRinp' : None, 
+        #                  'execution_time' : t.interval}
+        # except Exception as e:
+        #     PMF_Dict = { 'SNRlevel' : SNRlevel, 'trial' : trial, 'seed' : seed_, 'Model' : 'PMF',
+        #                  'SINR' : -999, 'SINRlist':  str(e), 'SNR' : None,
+        #                  'S' : None, 'A' : None, 'X': None, 'Wf' : None, 'SNRinp' : None, 
+        #                  'execution_time' : t.interval}
 
         RESULTS_DF = RESULTS_DF.append(WSM_Dict, ignore_index = True)
         RESULTS_DF = RESULTS_DF.append(LDMI_Dict, ignore_index = True)
-        RESULTS_DF = RESULTS_DF.append(PMF_Dict, ignore_index = True)
+        # RESULTS_DF = RESULTS_DF.append(PMF_Dict, ignore_index = True)
         RESULTS_DF.to_pickle(os.path.join("../Results", pickle_name_for_results))
 
 RESULTS_DF.to_pickle(os.path.join("../Results", pickle_name_for_results))

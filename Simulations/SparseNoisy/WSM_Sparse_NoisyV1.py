@@ -66,8 +66,7 @@ for iter1 in range(NumAverages): ## Loop over number of averages
 
         # Szeromean = S - S.mean(axis = 1).reshape(-1,1)
         
-        A = np.random.standard_normal(size=(NumberofMixtures, NumberofSources))
-        X = np.dot(A,S)
+        A, X = WSM_Mixing_Scenario(S, NumberofMixtures, INPUT_STD = 0.5)
 
         Xnoisy, NoisePart = addWGN(X, SNRlevel, return_noise = True)
 
@@ -78,7 +77,6 @@ for iter1 in range(NumAverages): ## Loop over number of averages
         #######################################################
         try: # Try Except for SVD did not converge error (or for any other error)
             MUS = 0.25
-            WSM_INPUT_STD = 0.5
             gammaM_start = [MUS, MUS]
             gammaM_stop = [1e-3, 1e-3]
             gammaW_start = [MUS, MUS]
@@ -127,10 +125,9 @@ for iter1 in range(NumAverages): ## Loop over number of averages
                                     A=A,
                                 )
 
-            XnoisyWSM = (WSM_INPUT_STD * (Xnoisy / Xnoisy.std(1)[:,np.newaxis]))
             with Timer() as t:
                 modelWSM.fit_batch_sparse(
-                                            XnoisyWSM,
+                                            Xnoisy,
                                             n_epochs=1,
                                             neural_lr_start=0.4,
                                             synaptic_lr_rule=synaptic_lr_rule,
@@ -143,7 +140,7 @@ for iter1 in range(NumAverages): ## Loop over number of averages
             ######### Evaluate the Performance of WSM Framework ###########################
             SINRlistWSM = modelWSM.SIR_list
             WfWSM = modelWSM.compute_overall_mapping(return_mapping = True)
-            YWSM = WfWSM @ XnoisyWSM
+            YWSM = WfWSM @ Xnoisy
             SINRWSM, SNRWSM, _, _, _ = evaluate_bss(WfWSM, YWSM, A, S, mean_normalize_estimations = False)
             
             WSM_Dict = {'SNRlevel' : SNRlevel, 'trial' : trial, 'seed' : seed_, 'Model' : 'WSM',

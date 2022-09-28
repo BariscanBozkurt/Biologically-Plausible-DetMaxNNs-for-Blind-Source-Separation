@@ -2857,7 +2857,7 @@ class OnlineWSMBSS(BSSBaseClass):
                                 Y_,
                                 P,
                             ) = self.evaluate_for_debug(
-                                W, A, Szeromean, X, mean_normalize_estimation=True
+                                W, A, S, X, mean_normalize_estimation=False
                             )
 
                             self.SV_list.append(abs(SGG))
