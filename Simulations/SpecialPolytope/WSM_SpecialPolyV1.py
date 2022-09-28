@@ -21,7 +21,7 @@ warnings.filterwarnings("ignore")
 if not os.path.exists("../Results"):
     os.mkdir("../Results")
 
-pickle_name_for_results = "simulation_results_correlated_antisparseV3.pkl"
+pickle_name_for_results = "simulation_results_general_poly.pkl"
 
 N = 500000
 NumberofSources = 3
@@ -165,6 +165,7 @@ for iter1 in range(NumAverages):
                           'SIRlist' : None,  'SNR' : None, 'SNRlist' : None, 'S' : S, 'A' :A, 'Wf': None, 'SNRinp' : SNRinp}
 
 
-        RESULTS_DF = RESULTS_DF.append(WSM_Dict, ignore_index = True)
-
+        RESULTS_DF = RESULTS_DF.append(WSM_dict, ignore_index = True)
+        RESULTS_DF.to_pickle(os.path.join("../Results", pickle_name_for_results))
+        
 RESULTS_DF.to_pickle(os.path.join("../Results", pickle_name_for_results))
