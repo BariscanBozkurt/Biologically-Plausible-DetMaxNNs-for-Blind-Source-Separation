@@ -3279,6 +3279,382 @@ class OnlineWSMOlshaussen(OnlineWSMBSS):
         self.H = H
         self.Y = Y
 
+class OnlineWSMPMF(OnlineWSMBSS):
+    """
+    This class is only written for the special polytope presented in the paper. Check the Appendices D.6 and E.7.1
+    """
+    @staticmethod
+    @njit
+    def run_neural_dynamics(
+        x_current,
+        h,
+        y,
+        M_H,
+        M_Y,
+        W_HX,
+        W_YH,
+        D1,
+        D2,
+        beta,
+        zeta,
+        neural_dynamic_iterations,
+        lr_start,
+        lr_stop,
+        lr_rule,
+        lr_decay_multiplier=0.005,
+        stlambd_lr=1.5,
+        hidden_layer_gain=2,
+        neural_fast_start=False,
+        OUTPUT_COMP_TOL=1e-7,
+    ):
+        def offdiag(A, return_diag=False):
+            if return_diag:
+                diag = np.diag(A)
+                return A - np.diag(diag), diag
+            else:
+                return A - np.diag(diag)
+
+        if neural_fast_start:
+            # Mapping from xt -> ht
+            A = (1 - zeta) * (
+                beta * ((D1 * M_H) * D1.T)
+                + (1 - beta) * (M_H - W_YH.T @ np.linalg.solve(M_Y, W_YH))
+            )
+            b = (1 - zeta) * beta * (D1 * W_HX)
+            WL1 = np.linalg.solve(A, b)
+            # Mapping from ht -> yt
+            WL2 = np.linalg.solve(M_Y * D2.T, W_YH)
+            h = WL1 @ x_current
+            y = WL2 @ h
+
+        M_hat_H, Gamma_H = offdiag(M_H, True)
+        M_hat_Y, Gamma_Y = offdiag(M_Y, True)
+
+        mat_factor1 = (1 - zeta) * beta * (D1 * W_HX)
+        mat_factor2 = (1 - zeta) * (1 - beta) * M_hat_H + (1 - zeta) * beta * (
+            (D1 * M_hat_H) * D1.T
+        )
+        mat_factor3 = (1 - zeta) * (1 - beta) * (W_YH.T * D2.T)
+        mat_factor4 = (1 - zeta) * Gamma_H * ((1 - beta) + beta * (D1.T) ** 2)
+        mat_factor5 = M_hat_Y * D2.T
+        mat_factor6 = Gamma_Y * D2.T
+
+        v = mat_factor4[0] * h
+        u = mat_factor6[0] * y
+
+        PreviousMembraneVoltages = {'v': np.zeros_like(v), 'u': np.zeros_like(u)}
+        MembraneVoltageNotSettled = 1
+        OutputCounter = 0
+        STLAMBD1 = 0
+        STLAMBD2 = 0
+
+        while MembraneVoltageNotSettled & (OutputCounter < neural_dynamic_iterations):
+            OutputCounter += 1
+            if lr_rule == "constant":
+                MUV = lr_start
+            elif lr_rule == "divide_by_loop_index":
+                MUV = max(lr_start / (1 + OutputCounter), lr_stop)
+            elif lr_rule == "divide_by_slow_loop_index":
+                MUV = max(lr_start / (1 + OutputCounter * lr_decay_multiplier), lr_stop)
+
+            delv = -v + mat_factor1 @ x_current - mat_factor2 @ h + mat_factor3 @ y
+            v = v + MUV * delv
+            h = v / mat_factor4[0]
+            h = np.clip(h, -hidden_layer_gain, hidden_layer_gain)
+            delu = -u + W_YH @ h - mat_factor5 @ y
+            u = u + MUV * delu
+            y = u / mat_factor6[0]
+
+            y_sparse_absolute1 = np.abs(y[np.array([0,1])])
+            y_sparse_absolute2 = np.abs(y[np.array([1,2])])
+            y_sparse_sign1 = np.sign(y[np.array([0,1])])
+            y_sparse_sign2 = np.sign(y[np.array([1,2])])
+            
+            y[0] = (y_sparse_absolute1[0] > STLAMBD1) * (y_sparse_absolute1[0] - STLAMBD1) * y_sparse_sign1[0]
+            y[1] = (y_sparse_absolute1[1] > (STLAMBD1 + STLAMBD2)) * (y_sparse_absolute1[1] - (STLAMBD1 + STLAMBD2)) * y_sparse_sign1[1]
+            y[2] = (y_sparse_absolute2[1] > STLAMBD2) * (y_sparse_absolute2[1] - STLAMBD2) * y_sparse_sign2[1]
+            
+            y = y*(y>=-1.0)*(y<=1.0)+(y>1.0)*1.0-1.0*(y<-1.0)
+            y[2] = y[2]*(y[2]>=0)*(y[2]<=1) + 1.0*(y[2]>1)
+            
+            dval1 = np.linalg.norm(y[np.array([0,1])],1) - 1
+            dval2 = np.linalg.norm(y[np.array([1,2])],1) - 1
+            
+            STLAMBD1 = max(STLAMBD1 + stlambd_lr * dval1,0)
+            STLAMBD2 = max(STLAMBD2 + stlambd_lr * dval2,0)
+
+            MembraneVoltageNotSettled = 0
+            if (
+                np.linalg.norm(v - PreviousMembraneVoltages["v"]) / np.linalg.norm(v)
+                > OUTPUT_COMP_TOL
+            ) | (
+                np.linalg.norm(u - PreviousMembraneVoltages["u"]) / np.linalg.norm(u)
+                > OUTPUT_COMP_TOL
+            ):
+                MembraneVoltageNotSettled = 1
+            PreviousMembraneVoltages["v"] = v
+            PreviousMembraneVoltages["u"] = u
+
+        return h, y, OutputCounter
+
+    def fit_batch_pmf(
+        self,
+        X,
+        n_epochs=1,
+        neural_dynamic_iterations=750,
+        neural_lr_start=0.2,
+        neural_lr_stop=0.5,
+        stlambd_lr=1.5,
+        synaptic_lr_rule="divide_by_log_index",
+        neural_loop_lr_rule="divide_by_slow_loop_index",
+        synaptic_lr_decay_divider=5000,
+        neural_lr_decay_multiplier=0.005,
+        neural_fast_start=False,
+        hidden_layer_gain=2,
+        clip_gain_gradients=False,
+        gain_grads_clipping_multiplier = 1,
+        use_newton_steps_for_gains = False,
+        shuffle=True,
+        debug_iteration_point=1000,
+        plot_in_jupyter=False,
+    ):
+
+        (
+            gammaM_start,
+            gammaM_stop,
+            gammaW_start,
+            gammaW_stop,
+            beta,
+            zeta,
+            muD,
+            W_HX,
+            W_YH,
+            M_H,
+            M_Y,
+            D1,
+            D2,
+        ) = (
+            self.gammaM_start,
+            self.gammaM_stop,
+            self.gammaW_start,
+            self.gammaW_stop,
+            self.beta,
+            self.zeta,
+            np.array(self.muD),
+            self.W_HX,
+            self.W_YH,
+            self.M_H,
+            self.M_Y,
+            self.D1,
+            self.D2,
+        )
+        LayerMinimumGains = self.LayerMinimumGains
+        LayerMaximumGains = self.LayerMaximumGains
+        debugging = self.set_ground_truth
+
+        assert (
+            X.shape[0] == self.x_dim
+        ), "You must input the transpose, or you need to change one of the following hyperparameters: s_dim, x_dim"
+        D1list = []
+        D2list = []
+        self.SV_list = []
+        s_dim = self.s_dim
+        h_dim = self.h_dim
+        samples = X.shape[1]
+
+        if self.Y is None:
+            H = np.zeros((h_dim, samples))
+            Y = np.zeros((s_dim, samples))
+        else:
+            H, Y = self.H, self.Y
+
+        if debugging:
+            SIR_list = self.SIR_list
+            SNR_list = self.SNR_list
+            S = self.S
+            A = self.A
+            Szeromean = S - S.mean(axis=1).reshape(-1, 1)
+            plt.figure(figsize=(70, 50), dpi=80)
+
+        for k in range(n_epochs):
+            if shuffle:
+                idx = np.random.permutation(samples)
+            else:
+                idx = np.arange(samples)
+
+            for i_sample in tqdm(range(samples)):
+
+                if ((i_sample + 1) % 100000) == 0:
+                    muD = 0.99 * np.array(muD)
+
+                x_current = X[:, idx[i_sample]]  # Take one input
+
+                y = Y[:, idx[i_sample]]
+
+                h = H[:, idx[i_sample]]
+                neural_OUTPUT_COMP_TOL = self.neural_OUTPUT_COMP_TOL
+
+                h, y, _ = self.run_neural_dynamics(
+                    x_current=x_current,
+                    h=h,
+                    y=y,
+                    M_H=M_H,
+                    M_Y=M_Y,
+                    W_HX=W_HX,
+                    W_YH=W_YH,
+                    D1=D1,
+                    D2=D2,
+                    beta=beta,
+                    zeta=zeta,
+                    neural_dynamic_iterations=neural_dynamic_iterations,
+                    lr_start=neural_lr_start,
+                    lr_stop=neural_lr_stop,
+                    lr_rule=neural_loop_lr_rule,
+                    lr_decay_multiplier=neural_lr_decay_multiplier,
+                    neural_fast_start=neural_fast_start,
+                    stlambd_lr=stlambd_lr,
+                    hidden_layer_gain=hidden_layer_gain,
+                    OUTPUT_COMP_TOL=neural_OUTPUT_COMP_TOL,
+                )
+
+                if synaptic_lr_rule == "constant":
+                    MU_MH = gammaM_start[0]
+                    MU_MY = gammaM_start[1]
+                    MU_WHX = gammaW_start[0]
+                    MU_WYH = gammaW_start[1]
+                elif synaptic_lr_rule == "divide_by_log_index":
+                    # MUS = np.max([gamma_start/(1 + np.log(2 + (i_sample))), gamma_stop])
+                    MU_MH = np.max(
+                        [
+                            gammaM_start[0]
+                            / (1 + np.log(2 + (i_sample // synaptic_lr_decay_divider))),
+                            gammaM_stop[0],
+                        ]
+                    )
+                    MU_MY = np.max(
+                        [
+                            gammaM_start[1]
+                            / (1 + np.log(2 + (i_sample // synaptic_lr_decay_divider))),
+                            gammaM_stop[1],
+                        ]
+                    )
+                    MU_WHX = np.max(
+                        [
+                            gammaW_start[0]
+                            / (1 + np.log(2 + (i_sample // synaptic_lr_decay_divider))),
+                            gammaW_stop[0],
+                        ]
+                    )
+                    MU_WYH = np.max(
+                        [
+                            gammaW_start[1]
+                            / (1 + np.log(2 + (i_sample // synaptic_lr_decay_divider))),
+                            gammaW_stop[1],
+                        ]
+                    )
+                elif synaptic_lr_rule == "divide_by_index":
+                    MU_MH = np.max([gammaM_start[0] / (i_sample + 1), gammaM_stop[0]])
+                    MU_MY = np.max([gammaM_start[1] / (i_sample + 1), gammaM_stop[1]])
+                    MU_WHX = np.max([gammaW_start[0] / (i_sample + 1), gammaW_stop[0]])
+                    MU_WYH = np.max([gammaW_start[1] / (i_sample + 1), gammaW_stop[1]])
+
+                W_HX, W_YH, M_H, M_Y, D1, D2 = self.update_weights_jit(
+                    x_current,
+                    h,
+                    y,
+                    zeta,
+                    beta,
+                    W_HX,
+                    W_YH,
+                    M_H,
+                    M_Y,
+                    D1,
+                    D2,
+                    MU_MH,
+                    MU_MY,
+                    MU_WHX,
+                    MU_WYH,
+                    muD,
+                    LayerMinimumGains,
+                    LayerMaximumGains,
+                    clip_gain_gradients,
+                    gain_grads_clipping_multiplier,
+                    use_newton_steps_for_gains = use_newton_steps_for_gains,
+                )
+
+                Y[:, idx[i_sample]] = y
+                H[:, idx[i_sample]] = h
+
+                if debugging:
+                    if ((i_sample % debug_iteration_point) == 0) | (i_sample == (samples - 1)):
+                        try:
+                            W = self.compute_overall_mapping_jit(
+                                beta, zeta, D1, D2, M_H, M_Y, W_HX, W_YH
+                            )
+                            self.W = W
+
+                            (
+                                SINR_current,
+                                SNR_current,
+                                SGG,
+                                Y_,
+                                P,
+                            ) = self.evaluate_for_debug(
+                                W, A, S, X, mean_normalize_estimation=False
+                            )
+
+                            self.SV_list.append(abs(SGG))
+
+                            SNR_list.append(SNR_current)
+                            SIR_list.append(SINR_current)
+
+                            if plot_in_jupyter:
+                                D1list.append(
+                                    D1.reshape(
+                                        -1,
+                                    )
+                                )
+                                D2list.append(
+                                    D2.reshape(
+                                        -1,
+                                    )
+                                )
+                                YforPlot = Y[:, idx[i_sample - 25 : i_sample]].T
+                                self.plot_for_debug(
+                                    SIR_list,
+                                    SNR_list,
+                                    D1list,
+                                    D2list,
+                                    P,
+                                    debug_iteration_point,
+                                    YforPlot,
+                                )
+
+                            self.W_HX = W_HX
+                            self.W_YH = W_YH
+                            self.M_H = M_H
+                            self.M_Y = M_Y
+                            self.D1 = D1
+                            self.D2 = D2
+
+                            self.H = H
+                            self.Y = Y
+                            self.SIR_list = SIR_list
+                            self.SNR_list = SNR_list
+                        except Exception as e:
+                            print(str(e))
+        self.W_HX = W_HX
+        self.W_YH = W_YH
+        self.M_H = M_H
+        self.M_Y = M_Y
+        self.D1 = D1
+        self.D2 = D2
+
+        self.H = H
+        self.Y = Y
+        self.SIR_list = SIR_list
+        self.SNR_list = SNR_list
+
 class OnlineWSMBSSCanonical(OnlineWSMBSS):
 
     @staticmethod
