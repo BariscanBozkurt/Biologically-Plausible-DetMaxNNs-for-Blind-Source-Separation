@@ -89,8 +89,8 @@ for iter1 in range(NumAverages): ## Loop over number of averages
             beta = 0.5
             muD = np.array([1.0, 1e-2])
 
-            s_dim = S.shape[0]
-            x_dim = X.shape[0]
+            # s_dim = S.shape[0]
+            # x_dim = Xnoisy.shape[0]
             h_dim = s_dim
             samples = S.shape[1]
             W_HX = np.eye(h_dim, x_dim)
