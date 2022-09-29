@@ -18,12 +18,10 @@ from numba_utils import *
 mpl.rcParams["xtick.labelsize"] = 15
 mpl.rcParams["ytick.labelsize"] = 15
 
-
 @njit
 def clipping(inp, lev):
     out = inp * (np.abs(inp) <= lev) + lev * (inp > lev) - lev * (inp < -lev)
     return out
-
 
 ################ WEIGHTED SIMILARITY MATCHING BLIND SOURCE SEPARATION #######################
 class OnlineWSMBSS(BSSBaseClass):
@@ -3645,7 +3643,6 @@ class OnlineWSMBSSCanonical(OnlineWSMBSS):
         self.Y = Y
         self.SIR_list = SIR_list
         self.SNR_list = SNR_list
-
 
 class OnlineWSMICA(OnlineWSMBSS):
     #### ONLY WRITTEN TO TRY. NO SUCCESS YET

@@ -89,4 +89,3 @@ If you find this useful, please cite:
 	author = {Bariscan Bozkurt and Cengiz Pehlevan and Alper Erdogan}
 }
 ```
-Link to the paper at arxiv : (will be added!)
