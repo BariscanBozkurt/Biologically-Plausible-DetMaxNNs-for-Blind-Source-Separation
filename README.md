@@ -57,10 +57,10 @@ SparseNoisy                           | Sparse source separation simulations
 NonnegativeSparseNoisy                | Nonnegative sparse source separation simulations
 SparseDictionaryLearning              | Sparse dictionary learning experiment
 SpecialPolytope                       | A BSS simulation on a 3-dimensional identifiable polytope presented in the paper
-ImageSeparation                       | Image separation demo (not presented in the paper)
+ImageSeparation                       | Image separation demo
 4PAM_Example                          | A BSS simulation setting with 4PAM digital communication signals
 AblationStudies                       | Ablation studies on hyperparameter selections
-AnalyzeSimulationResults              | Producing the plots and table for simulation results
+AnalyzeSimulationResults              | Producing the plots and tables for simulation results
 
 ## References
 
