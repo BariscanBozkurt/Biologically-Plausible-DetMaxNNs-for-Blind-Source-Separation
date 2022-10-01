@@ -31,10 +31,10 @@ Python Script         |  Explanation
 :--------------------:|:-------------------------:
 BSSbase.py            | Base class for blind source separation algorithms
 WSMBSS.py             | Our proposed Weighted similarity mathcing-based (WSM) determinant maximization neural networks for blind separation of correlated sources
-BSMBSS.py             | Implementation of Bounded similarity matching (BSM) for uncorrelated antisparse sources [3]
-NSMBSS.py             | Implementation of Nonnegative similarity matching (NSM) for uncorrelated nonnegative sources [4]
-LDMIBSS.py            | Implementation of Log-det (LD-) Mutual Information maximization (LD-InfoMax) framework for blind separation of correlated sources [5]
-PMF.py                | Implementation of Polytopic Matrix Factorization [6]
+BSMBSS.py             | Implementation of Bounded similarity matching (BSM) for uncorrelated antisparse sources [1]
+NSMBSS.py             | Implementation of Nonnegative similarity matching (NSM) for uncorrelated nonnegative sources [2]
+LDMIBSS.py            | Implementation of Log-det (LD-) Mutual Information maximization (LD-InfoMax) framework for blind separation of correlated sources [3]
+PMF.py                | Implementation of Polytopic Matrix Factorization [4]
 ICA.py                | Implementation of several independent component analysis frameworks 
 bss_utils.py          | Utility functions for blind source separation experiments
 dsp_utils.py          | Utility functions for digital signal processing
