@@ -10,7 +10,20 @@ General source domain with sparse components            |  Antisparse sources
 
 ## To Run Simulations
 
-Explanation will be added soon!
+The folder "Simulations" includes the codes for example experiments. The subfolders are named accordingly, e.g., "SparseNoisy" folder contains the experiments for the sparse source separation simulations. The jupyter notebooks inside the folder "Simulations/AnalyzeSimulationResults" illustrates the plots and tables of the experiment results. For example, the notebook "PlotSimulationResults_SparseNoisy.ipynb" includes the plots for the sparse source separation experiments. To replicate the figures in this specific notebook, you need to follow the below steps,
+
+ * Run the python script in the folder "Simulations/SparseNoisy" with the following command:
+
+    ``` python WSM_Sparse_NoisyV1.py```
+
+ * When you run the python simulation, the following pickle file will be created which contains the SINR results.
+
+    * "Simulations/Results/simulation_results_sparse_noisyV1.pkl"
+
+ * The jupyter notebook "Simulations/AnalyzeSimulationResultsFinal/PlotSimulationResults_SparseNoisy.ipynb" reads the above pickle file and visualize the SINR convergence results. Moreover, the performances of the batch (or baseline) algorithms are also reported.
+
+To replicate simulations in the given folders, you can adapt the above procedure for the other examples (i.e., antisparse blind source separation (BSS) simulations). The experiment for image separation is included in "Simulations/ImageSeparation" as Jupyter Notebook files. The sparse dictionary learning experiment is located in "Simulations/SparseDictionaryLearning", and the notebook inside this folder produces the sparse receptive fields from prewhitened Olshaussen's image pathces (you need "imagepatcheselfwhitened.mat" file whereas it is not included here due to its file size).
+
 
 ## Python Version and Dependencies
 
